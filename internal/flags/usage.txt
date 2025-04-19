@@ -1,0 +1,17 @@
+go2bad is a Go source code obfuscator.
+
+Usage:
+
+    go2bad [-O output_dir] [flags] packages
+
+Source packages are specified the same way as in the `go build` command. 
+For example, . specifies the package in the current directory, 
+and ./... specifies packages in the current directory and all its 
+recursive subdirectories.
+
+Default value of packages is .
+
+Obfuscated packages will be written to the directory specified by
+the -O parameter.
+
+Available flags are:
