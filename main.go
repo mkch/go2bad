@@ -99,14 +99,8 @@ func internalPos(pkgPath string) int {
 	return strings.LastIndex(pkgPath, "/internal/")
 }
 
-func isInternalPackage(pkg *packages.Package) bool {
-	return internalPos(gg.If(pkg.ForTest != "", pkg.ForTest, pkg.ID)) > 0
-}
-
-func canImportPkg(internalPkg, pkg *packages.Package) bool {
-	internalID := gg.If(internalPkg.ForTest != "", internalPkg.ForTest, internalPkg.ID)
-	pkgID := gg.If(pkg.ForTest != "", pkg.ForTest, pkg.ID)
-	return canImport(internalID, pkgID)
+func isInternalPackage(pkgPath string) bool {
+	return internalPos(pkgPath) > 0
 }
 
 func canImport(internalPkg, pkg string) bool {
@@ -160,7 +154,8 @@ func logPackageErrors(pkgs []*packages.Package) int {
 }
 
 func rot(pkgs ...string) (err error) {
-	const mode = packages.NeedCompiledGoFiles |
+	const mode = packages.NeedName |
+		packages.NeedCompiledGoFiles |
 		packages.NeedSyntax |
 		packages.NeedTypesInfo |
 		packages.NeedModule |
@@ -185,22 +180,22 @@ func rot(pkgs ...string) (err error) {
 
 	// process pkg itself
 	for _, pkg := range loaded {
-		slog.Info("processing package...\t", "pkg", pkg.ID)
+		slog.Info("processing package...\t", "pkg", pkg.PkgPath)
 		imports := intrinsicImportNames(pkg)
 		defs, uses := pkg.TypesInfo.Defs, pkg.TypesInfo.Uses
-		if cmdArgs.ObfuscateInternalExports && isInternalPackage(pkg) {
+		if cmdArgs.ObfuscateInternalExports && isInternalPackage(pkg.PkgPath) {
 			if exportRenamers == nil {
 				exportRenamers = make(map[*packages.Package]*renamer)
 			}
-			slog.Info("renaming exported ids...\t", "pkg", pkg.ID)
+			slog.Info("renaming exported ids...\t", "pkg", pkg.PkgPath)
 			exportRenamers[pkg] = renamePackageExports(pkg.Fset, defs, uses, idGenerator.NewExported(imports))
 		} else {
 			slog.Debug("skipping exported id renaming...\t",
-				"pkg", pkg.ID,
-				"internal", isInternalPackage(pkg),
+				"pkg", pkg.PkgPath,
+				"internal", isInternalPackage(pkg.PkgPath),
 				"-oie", cmdArgs.ObfuscateInternalExports)
 		}
-		slog.Info("renaming unexported ids...\t", "pkg", pkg.ID)
+		slog.Info("renaming unexported ids...\t", "pkg", pkg.PkgPath)
 		renamePackage(pkg.Fset, defs, uses, idGenerator.NewUnexported(imports))
 	}
 
@@ -208,15 +203,15 @@ func rot(pkgs ...string) (err error) {
 	for internal, renamer := range exportRenamers {
 		for _, pkg := range loaded {
 			if pkg == internal {
-				slog.Debug("skipping usage renaming...\t", "internal", internal.ID, "target", pkg.ID, "reason", "self")
+				slog.Debug("skipping usage renaming...\t", "internal", internal.PkgPath, "target", pkg.PkgPath, "reason", "self")
 				continue // skip pkg itself
 			}
 
-			if !canImportPkg(internal, pkg) {
-				slog.Debug("skipping usage renaming...\t", "internal", internal.ID, "target", pkg.ID, "reason", "can't import")
+			if !canImport(internal.PkgPath, pkg.PkgPath) {
+				slog.Debug("skipping usage renaming...\t", "internal", internal.PkgPath, "target", pkg.PkgPath, "reason", "can't import")
 				continue
 			}
-			slog.Info("renaming usage...\t", "internal", internal.ID, "target", pkg.ID)
+			slog.Info("renaming usage...\t", "internal", internal.PkgPath, "target", pkg.PkgPath)
 			for id, obj := range pkg.TypesInfo.Uses {
 				renamer.Rename(id, obj)
 			}
@@ -227,7 +222,7 @@ func rot(pkgs ...string) (err error) {
 	for _, pkg := range loaded {
 		pkgDirRel := gg.Must(filepath.Rel(gg.Must(filepath.Abs("")), pkg.Dir))
 		destPkgDir := filepath.Join(cmdArgs.OutDir, pkgDirRel)
-		slog.Info("writing package...\t", "pkg", pkg.ID, "dest", destPkgDir)
+		slog.Info("writing package...\t", "pkg", pkg.PkgPath, "dest", destPkgDir)
 		if err = os.MkdirAll(destPkgDir, 0777); err != nil {
 			return
 		}
