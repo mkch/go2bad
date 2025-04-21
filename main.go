@@ -4,18 +4,14 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"go/ast"
 	"go/format"
-	"go/token"
 	"go/types"
 	"io"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"flag"
@@ -23,10 +19,10 @@ import (
 	"github.com/mkch/gg"
 	filepath2 "github.com/mkch/gg/filepath"
 	os2 "github.com/mkch/gg/os"
-	slices2 "github.com/mkch/gg/slices"
 	"github.com/mkch/go2bad/internal/comments"
 	"github.com/mkch/go2bad/internal/flags"
 	"github.com/mkch/go2bad/internal/idgen"
+	"github.com/mkch/go2bad/internal/renamer"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -68,7 +64,7 @@ func main() {
 	var err error
 	idGenerator, err = createIDGenerator()
 	if err == nil {
-		err = rot(args...)
+		err = rename(args...)
 	}
 	if err != nil {
 		slog.Error(err.Error())
@@ -115,21 +111,6 @@ func canImport(internalPkg, pkg string) bool {
 	return strings.HasPrefix(pkg, parent)
 }
 
-// intrinsicImportNames returns all package identifiers introduced
-// by unnamed import clauses in pkg.
-func intrinsicImportNames(pkg *packages.Package) (ret gg.Set[string]) {
-	ret = make(gg.Set[string])
-	for _, f := range pkg.Syntax {
-		type spec = *ast.ImportSpec
-		imports := slices2.Filter(f.Imports, func(spec spec) bool { return spec.Name == nil || spec.Name.Name == "." })
-		names := slices2.Map(imports, func(spec spec) string { return path.Base(gg.Must(strconv.Unquote(spec.Path.Value))) })
-		for _, name := range names {
-			ret.Add(name)
-		}
-	}
-	return
-}
-
 func logPackageErrors(pkgs []*packages.Package) int {
 	var n int
 	errModules := make(map[*packages.Module]bool)
@@ -153,8 +134,9 @@ func logPackageErrors(pkgs []*packages.Package) int {
 	return n
 }
 
-func rot(pkgs ...string) (err error) {
-	const mode = packages.NeedName |
+func rename(pkgs ...string) (err error) {
+	const mode = packages.NeedTypes |
+		packages.NeedName |
 		packages.NeedCompiledGoFiles |
 		packages.NeedSyntax |
 		packages.NeedTypesInfo |
@@ -176,46 +158,9 @@ func rot(pkgs ...string) (err error) {
 
 	loaded = filterPackages(loaded)
 
-	var exportRenamers map[*packages.Package]*renamer
-
-	// process pkg itself
 	for _, pkg := range loaded {
-		slog.Info("processing package...\t", "pkg", pkg.PkgPath)
-		imports := intrinsicImportNames(pkg)
-		defs, uses := pkg.TypesInfo.Defs, pkg.TypesInfo.Uses
-		if cmdArgs.ObfuscateInternalExports && isInternalPackage(pkg.PkgPath) {
-			if exportRenamers == nil {
-				exportRenamers = make(map[*packages.Package]*renamer)
-			}
-			slog.Info("renaming exported ids...\t", "pkg", pkg.PkgPath)
-			exportRenamers[pkg] = renamePackageExports(pkg.Fset, defs, uses, idGenerator.NewExported(imports))
-		} else {
-			slog.Debug("skipping exported id renaming...\t",
-				"pkg", pkg.PkgPath,
-				"internal", isInternalPackage(pkg.PkgPath),
-				"-oie", cmdArgs.ObfuscateInternalExports)
-		}
-		slog.Info("renaming unexported ids...\t", "pkg", pkg.PkgPath)
-		renamePackage(pkg.Fset, defs, uses, idGenerator.NewUnexported(imports))
-	}
-
-	// rename usage of pkg
-	for internal, renamer := range exportRenamers {
-		for _, pkg := range loaded {
-			if pkg == internal {
-				slog.Debug("skipping usage renaming...\t", "internal", internal.PkgPath, "target", pkg.PkgPath, "reason", "self")
-				continue // skip pkg itself
-			}
-
-			if !canImport(internal.PkgPath, pkg.PkgPath) {
-				slog.Debug("skipping usage renaming...\t", "internal", internal.PkgPath, "target", pkg.PkgPath, "reason", "can't import")
-				continue
-			}
-			slog.Info("renaming usage...\t", "internal", internal.PkgPath, "target", pkg.PkgPath)
-			for id, obj := range pkg.TypesInfo.Uses {
-				renamer.Rename(id, obj)
-			}
-		}
+		renameExported := isInternalPackage(pkg.PkgPath) && cmdArgs.RenameInternalExports
+		renamer.Rename(pkg, idGenerator, renameExported, cmdArgs.KeepNames.Contains)
 	}
 
 	// write
@@ -332,34 +277,6 @@ func doNotEdit(f *os.File) (err error) {
 	return
 }
 
-func renamePackage(fset *token.FileSet, defs, uses map[*ast.Ident]types.Object, next func() string) {
-	renamer := newRenamer(fset, defs, next, func(id *ast.Ident, obj types.Object) bool {
-		if id.Name == "." || id.Name == "_" || obj == nil {
-			slog.Debug("skipping id...\t", "id", id.Name)
-			return false
-		}
-		// package exports
-		if isPackageExport(obj) {
-			slog.Debug("skipping exported id...\t", "id", id.Name)
-			return false
-		}
-		return true
-	})
-	for id, obj := range uses {
-		renamer.Rename(id, obj)
-	}
-}
-
-func renamePackageExports(fset *token.FileSet, defs, uses map[*ast.Ident]types.Object, next func() string) *renamer {
-	renamer := newRenamer(fset, defs, next, func(id *ast.Ident, obj types.Object) bool {
-		return isPackageExport(obj)
-	})
-	for id, obj := range uses {
-		renamer.Rename(id, obj)
-	}
-	return renamer
-}
-
 // isPackageExport returns whether object is a package export identifier.
 func isPackageExport(object types.Object) bool {
 	if object == nil {
@@ -372,138 +289,4 @@ func isPackageExport(object types.Object) bool {
 	return object.Exported() &&
 		(scope == nil || // methods or struct fields
 			scope == object.Pkg().Scope()) // package level ids
-}
-
-type nameObj struct {
-	newName string
-	Pos     gg.Set[token.Pos]
-}
-
-type renamerFilter func(id *ast.Ident, obj types.Object) bool
-
-type renamer struct {
-	names map[string]*nameObj // key is old name
-}
-
-// TestXxx where Xxx does not start with a lowercase letter
-// No id validation.
-var reTestFuncName = regexp.MustCompile(`^Test[^\p{Ll}]`)
-
-// isTestFunc returns true if obj is a test function.
-func isTestFunc(fset *token.FileSet, obj types.Object) bool {
-	if !strings.HasSuffix(fset.PositionFor(obj.Pos(), true).Filename, "_test.go") {
-		return false
-	}
-	f, ok := obj.(*types.Func)
-	if !ok {
-		return false
-	}
-	if !reTestFuncName.MatchString(f.Name()) {
-		return false
-	}
-	signature := f.Signature()
-	if signature.Recv() != nil {
-		return false
-	}
-	params := signature.Params()
-	if params == nil || signature.TypeParams() != nil || signature.Variadic() {
-		return false
-	}
-	argumentType := types.Unalias(params.At(0).Type())
-	return argumentType.String() == "*testing.T"
-
-}
-
-// isInitFunc returns true if obj is a package init function.
-func isInitFunc(obj types.Object) bool {
-	f, ok := obj.(*types.Func)
-	if !ok {
-		return false
-	}
-	if f.Name() != "init" {
-		return false
-	}
-	return true
-}
-
-func newRenamer(fset *token.FileSet, defs map[*ast.Ident]types.Object, next func() string, filter renamerFilter) *renamer {
-	var ret = renamer{
-		names: make(map[string]*nameObj),
-	}
-
-	type idObj struct {
-		id  *ast.Ident
-		obj types.Object
-	}
-	defsToRename := make(map[string][]idObj, len(defs)/2)
-	keptNames := make(gg.Set[string])
-
-	for id, obj := range defs {
-		if !filter(id, obj) {
-			continue
-		}
-		// init func
-		if isInitFunc(obj) {
-			keptNames.Add(id.Name)
-			continue
-		}
-		// test func
-		if isTestFunc(fset, obj) {
-			keptNames.Add(id.Name)
-			continue
-		}
-		// keep
-		if cmdArgs.KeepNames.Contains(obj.Pkg().Path(), id.Name) {
-			keptNames.Add(id.Name)
-			continue
-		}
-		if kvs := defsToRename[id.Name]; kvs == nil {
-			defsToRename[id.Name] = []idObj{{id, obj}}
-		} else {
-			defsToRename[id.Name] = append(kvs, idObj{id, obj})
-		}
-	}
-
-	if len(defsToRename) == 0 {
-		return &ret
-	}
-
-	for len(defsToRename) > 0 {
-		newName := next()
-		if keptNames.Contains(newName) {
-			continue // they are kept and not used for naming to avoid name conflict.
-		}
-		if defsToRename[newName] != nil {
-			// newName is used by the source
-			delete(defsToRename, newName) // already "renamed" to newName
-			continue                      // do not use it for future naming
-		}
-		var name string
-		var kvs []idObj
-		for name, kvs = range defsToRename {
-			break // get a random k-v from map
-		}
-
-		objects := make(gg.Set[token.Pos])
-		for _, kv := range kvs {
-			objects.Add(kv.obj.Pos())
-			kv.id.Name = newName
-		}
-		ret.names[name] = &nameObj{newName, objects}
-		delete(defsToRename, name) // already renamed
-	}
-
-	return &ret
-}
-
-// Rename renames id to a rotten name.
-func (rm *renamer) Rename(id *ast.Ident, obj types.Object) {
-	if named, ok := rm.names[id.Name]; !ok {
-		return
-	} else {
-		if _, in := named.Pos[obj.Pos()]; in {
-			slog.Debug("renaming id usage...\t", "id", id.Name, "new", named.newName)
-			id.Name = named.newName
-		}
-	}
 }

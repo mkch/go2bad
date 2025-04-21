@@ -14,15 +14,15 @@ import (
 )
 
 type Flags struct {
-	Force                    bool
-	ObfuscateInternalExports bool
-	IncludeTests             bool
-	OutDir                   string
-	KeepNames                keepFlag
-	Seeds                    seedsFlag
-	SeedFile                 string
-	Debug                    bool
-	Verbose                  bool
+	Force                 bool
+	RenameInternalExports bool
+	IncludeTests          bool
+	OutDir                string
+	KeepNames             keepFlag
+	Seeds                 seedsFlag
+	SeedFile              string
+	Debug                 bool
+	Verbose               bool
 }
 
 type seedsFlag []string
@@ -152,8 +152,8 @@ func Init() *Flags {
 	flag.BoolVar(&flags.Force, "f", false, "Alias for -overwrite.")
 	flag.StringVar(&flags.OutDir, "out-dir", "", "Path to the output directory. Required.")
 	flag.StringVar(&flags.OutDir, "o", "", "Alias for -out-dir.")
-	flag.BoolVar(&flags.ObfuscateInternalExports, "obfuscate-internal-exports", false, "Obfuscate exports names in internal packages.")
-	flag.BoolVar(&flags.ObfuscateInternalExports, "oie", false, "Alias for -obfuscate-internal-exports.")
+	flag.BoolVar(&flags.RenameInternalExports, "obfuscate-internal-exports", false, "Obfuscate exports names in internal packages.")
+	flag.BoolVar(&flags.RenameInternalExports, "oie", false, "Alias for -obfuscate-internal-exports.")
 	flag.Var(&flags.KeepNames, "keep", "Keep names from obfuscating. The format of name is\nName | pkg.Name | path/pkg.Name\nNames can be listed with commas or specified via repeated -keep flags.")
 	flag.Var(&flags.Seeds, "seeds", "Seeds to generate obfuscated names. The characters of flag value are used as seeds. Default value is equivalent to alphanumeric.")
 	flag.StringVar(&flags.SeedFile, "seed-file", "", "File contains space-separated seeds.")
