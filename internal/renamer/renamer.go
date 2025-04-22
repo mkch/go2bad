@@ -157,27 +157,16 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 }
 
 func (renamer *renamer) canRenameTo(name string, defPos token.Pos, defParent scope.Scope, newName string) bool {
-	if def := defParent.LookupDef(newName); def.IsValid() {
+	if !defParent.CanDef(newName, defPos) {
 		return false
-	}
-	if local, ok := defParent.(scope.Local); ok {
-		if scope, _ := local.LookupUseChildren(newName, defPos); scope != nil {
-			return false
-		}
 	}
 	for _, use := range renamer.useMap.Lookup(name) {
 		if use.Def.Pos() != defPos {
 			continue
 		}
 		useScope := renamer.pkgScope.Innermost(use.Use)
-		if use := useScope.LookupUse(newName); use != nil {
+		if !useScope.CanUse(newName, defPos) {
 			return false
-		}
-		_, isLocal := useScope.(scope.Local)
-		if def := useScope.LookupDef(newName); def.IsValid() {
-			if !isLocal || def < use.Use {
-				return false
-			}
 		}
 	}
 	return true
