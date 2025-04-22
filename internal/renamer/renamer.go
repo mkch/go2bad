@@ -8,20 +8,19 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mkch/gg"
 	slices2 "github.com/mkch/gg/slices"
 	"github.com/mkch/go2bad/internal/idgen"
 	"github.com/mkch/go2bad/internal/renamer/scope"
 	"golang.org/x/tools/go/packages"
 )
 
-func createUseMap(uses map[*ast.Ident]types.Object) (result scope.Uses) {
-	result = make(scope.Uses, len(uses))
+func createUseMap(uses map[*ast.Ident]types.Object) (result useMap) {
+	result = make(useMap, len(uses))
 	for id, object := range uses {
 		if object.Parent() == nil { // methods and struct fields.
 			continue
 		}
-		result.Add(id.Name, scope.Pos{Def: object.Pos(), Use: id.Pos()})
+		result.Add(id.Name, useDef{Use: id.Pos(), Def: object})
 	}
 	return
 }
@@ -64,9 +63,34 @@ func createDefMap(defs map[*ast.Ident]types.Object) defMap {
 	return result
 }
 
+type useDef struct {
+	Use token.Pos
+	Def types.Object
+}
+
+type useMap scope.MultiMap[useDef]
+
+func (m useMap) Lookup(name string) []useDef {
+	return scope.MultiMap[useDef](m).Lookup(name)
+}
+
+func (m useMap) Add(name string, obj ...useDef) {
+	scope.MultiMap[useDef](m).Add(name, obj...)
+}
+
+func (m useMap) Rename(name string, def token.Pos, newName string) {
+	uses := m.Lookup(name)
+	equalDef := func(obj useDef) bool { return obj.Def.Pos() == def }
+	newUses := slices2.Filter(uses, equalDef)
+	scope.MultiMap[useDef](m).DeleteFunc(name, equalDef)
+	if len(newUses) > 0 {
+		m.Add(newName, newUses...)
+	}
+}
+
 type renamer struct {
-	pkgScope *scope.Scope
-	useMap   scope.Uses
+	pkgScope scope.Scope
+	useMap   useMap
 	defMap   defMap
 }
 
@@ -132,35 +156,39 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 	}
 }
 
-func (renamer *renamer) canRenameTo(defPos token.Pos, defScope *scope.Scope, newName string) bool {
-	if defScope.ContainsDef(newName) {
+func (renamer *renamer) canRenameTo(name string, defPos token.Pos, defParent scope.Scope, newName string) bool {
+	if def := defParent.LookupDef(newName); def.IsValid() {
 		return false
 	}
-	if defScope.ContainsUseChildren(newName,
-		gg.If(defScope == renamer.pkgScope, token.NoPos, defPos)) {
-		return false
+	if local, ok := defParent.(scope.Local); ok {
+		if scope, _ := local.LookupUseChildren(newName, defPos); scope != nil {
+			return false
+		}
 	}
-	for _, use := range renamer.useMap.Lookup(newName) {
-		scope, defPosOfUse := renamer.pkgScope.Innermost(use.Use).LookupDefParent(newName)
-		if scope == nil {
+	for _, use := range renamer.useMap.Lookup(name) {
+		if use.Def.Pos() != defPos {
 			continue
 		}
-		if scope == renamer.pkgScope || scope.IsUniverse() {
+		useScope := renamer.pkgScope.Innermost(use.Use)
+		if use := useScope.LookupUse(newName); use != nil {
 			return false
 		}
-		if defPosOfUse != token.NoPos && defPosOfUse < use.Use {
-			return false
+		_, isLocal := useScope.(scope.Local)
+		if def := useScope.LookupDef(newName); def.IsValid() {
+			if !isLocal || def < use.Use {
+				return false
+			}
 		}
 	}
 	return true
 }
 
 func (renamer *renamer) Rename(id *ast.Ident, defObj types.Object, newName string) bool {
-	if !renamer.canRenameTo(id.Pos(), renamer.pkgScope.Scope(defObj.Parent()), newName) {
+	if !renamer.canRenameTo(id.Name, id.Pos(), renamer.pkgScope.Scope(defObj.Parent()), newName) {
 		return false
 	}
 
-	renamer.pkgScope.RenameChildren(id.Name, defObj.Pos(), newName)
+	renamer.pkgScope.Scope(defObj.Parent()).RenameChildren(id.Name, defObj.Pos(), newName)
 	renamer.useMap.Rename(id.Name, defObj.Pos(), newName)
 	renamer.defMap.Rename(id.Name, defObj.Pos(), newName)
 

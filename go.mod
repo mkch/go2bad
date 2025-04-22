@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/mkch/iter2 v0.0.0-20250207053637-629b3eb9dc77
+	github.com/mkch/iter2 v0.0.0-20250422043347-0a8d32207b63
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
 )
