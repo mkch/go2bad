@@ -49,6 +49,18 @@ func concat(seqs ...iter.Seq[int]) iter.Seq[int] {
 	return it2.Concat(args...)
 }
 
+func ta() {
+	var any1 any
+	switch t1 := any1.(type) {
+	case int:
+		t1 = 1
+	case string:
+		t1 = "1"
+	default:
+		_ = t1
+	}
+}
+
 var (
 	v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v19, v20 int
 )

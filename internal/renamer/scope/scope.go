@@ -20,19 +20,18 @@ type Scope interface {
 	LookupDef(name string) token.Pos
 	// LookupUse returns all the usages of name in this scope.
 	// If no usage is found, the result is nil.
-	LookupUse(name string) []Pos
+	LookupUse(name string) []defUsePos
 	// RenameChildren follows the children chain of scopes starting with scope
 	// to rename the definition and all usages of name defined at a specified position.
 	RenameChildren(name string, def token.Pos, newName string)
 	// Scope returns the scope corresponding to s.
 	Scope(s *types.Scope) Scope
-	// Innermost returns the innermost (child) scope containing pos.
-	// If pos is not within any scope, the result is nil.
-	Innermost(pos token.Pos) Scope
 	// CanDef returns whether a new name can be defined at pos in this scope.
 	CanDef(name string, pos token.Pos) bool
 	// CanUse returns whether a new name can be used at pos in this scope.
 	CanUse(name string, pos token.Pos) bool
+	// contains returns whether pos is in this scope.
+	contains(pos token.Pos) bool
 }
 
 // Local is a scope other than the scope of universe, package or file.
@@ -41,29 +40,10 @@ type Local interface {
 	LookupUseChildren(name string, pos token.Pos) (Scope, token.Pos)
 }
 
-// MultiMap is a generic map that associates string keys with slices of values of type T.
-type MultiMap[T any] map[string][]T
-
-// Lookup returns the values associated with the given name.
-func (m MultiMap[T]) Lookup(name string) []T {
-	return m[name]
-}
-
-// LookupFunc returns a filtered slice of values associated with the given name.
-func (m MultiMap[T]) LookupFunc(name string, f func(pos T) bool) []T {
-	return slices2.Filter(m.Lookup(name), f)
-}
-
-// Add appends one or more values to the slice associated with the given name.
-func (m MultiMap[T]) Add(name string, pos ...T) {
-	old := m.Lookup(name)
-	m[name] = append(old, pos...)
-}
-
 // DeleteFunc removes elements from the slice associated with the given name
 // for which the predicate function f returns true. If the resulting slice
 // is empty, the name is removed from the map.
-func (m MultiMap[T]) DeleteFunc(name string, f func(pos T) bool) {
+func (m multiMap[T]) DeleteFunc(name string, f func(pos T) bool) {
 	s := slices.DeleteFunc(m.Lookup(name), f)
 	if len(s) == 0 {
 		delete(m, name)
@@ -72,28 +52,28 @@ func (m MultiMap[T]) DeleteFunc(name string, f func(pos T) bool) {
 	}
 }
 
-// Pos is the definition and usage positions of a name.
-type Pos struct {
+// defUsePos is the definition and usage positions of a name.
+type defUsePos struct {
 	Def token.Pos // Position of definition.
 	Use token.Pos // Position of usage.
 }
 
-// Uses maps names to their usage.
-type Uses MultiMap[Pos]
+// useMap maps names to their usage.
+type useMap multiMap[defUsePos]
 
-func (m Uses) Lookup(name string) []Pos {
-	return MultiMap[Pos](m).Lookup(name)
+func (m useMap) Lookup(name string) []defUsePos {
+	return multiMap[defUsePos](m).Lookup(name)
 }
 
-func (m Uses) Add(name string, pos ...Pos) {
-	MultiMap[Pos](m).Add(name, pos...)
+func (m useMap) Add(name string, pos ...defUsePos) {
+	multiMap[defUsePos](m).Add(name, pos...)
 }
 
-func (m Uses) Rename(name string, def token.Pos, newName string) {
+func (m useMap) Rename(name string, def token.Pos, newName string) {
 	uses := m.Lookup(name)
-	equalDef := func(pos Pos) bool { return pos.Def == def }
+	equalDef := func(pos defUsePos) bool { return pos.Def == def }
 	newUses := slices2.Filter(uses, equalDef)
-	MultiMap[Pos](m).DeleteFunc(name, equalDef)
+	multiMap[defUsePos](m).DeleteFunc(name, equalDef)
 	if len(newUses) > 0 {
 		m.Add(newName, newUses...)
 	}
@@ -105,7 +85,7 @@ type scope struct {
 	pos, end token.Pos // pos and end describe the scope's source code extent [pos, end)
 	parent   Scope
 	defs     map[string]token.Pos // Definitions in this scope.
-	uses     Uses                 // Usages in this scope.
+	uses     useMap               // Usages in this scope.
 	children []*local
 }
 
@@ -121,7 +101,7 @@ func (s *scope) LookupDef(name string) token.Pos {
 	return s.defs[name]
 }
 
-func (s *scope) LookupUse(name string) []Pos {
+func (s *scope) LookupUse(name string) []defUsePos {
 	return s.uses.Lookup(name)
 }
 
@@ -141,17 +121,12 @@ func renameChildren(s *scope, name string, def token.Pos, newName string, defRen
 	}
 }
 
-func (s *scope) innermost(pos token.Pos) (Scope, bool) {
-	for _, child := range s.children {
-		if scope := child.Innermost(pos); scope != nil {
-			return scope, false
-		}
-	}
-	return nil, pos >= s.pos && pos < s.end
-}
-
 func (s *scope) RenameChildren(name string, def token.Pos, newName string) {
 	renameChildren(s, name, def, newName, false)
+}
+
+func (s *scope) contains(pos token.Pos) bool {
+	return pos >= s.pos && pos < s.end
 }
 
 // file is a file scope.
@@ -165,7 +140,7 @@ func (s *file) LookupDef(name string) token.Pos {
 	return (*scope)(s).LookupDef(name)
 }
 
-func (s *file) LookupUse(name string) []Pos {
+func (s *file) LookupUse(name string) []defUsePos {
 	return (*scope)(s).LookupUse(name)
 }
 
@@ -202,13 +177,8 @@ func (s *file) CanUse(name string, pos token.Pos) bool {
 	return true
 }
 
-func (s *file) Innermost(pos token.Pos) Scope {
-	if scope, selfMatch := (*scope)(s).innermost(pos); scope != nil {
-		return scope
-	} else if selfMatch {
-		return s
-	}
-	return nil
+func (s *file) contains(pos token.Pos) bool {
+	return (*scope)(s).contains(pos)
 }
 
 // local is a local scope(not universe, package or file).
@@ -222,7 +192,7 @@ func (s *local) LookupDef(name string) token.Pos {
 	return (*scope)(s).LookupDef(name)
 }
 
-func (s *local) LookupUse(name string) []Pos {
+func (s *local) LookupUse(name string) []defUsePos {
 	return (*scope)(s).LookupUse(name)
 }
 
@@ -249,22 +219,12 @@ func (s *local) LookupUseChildren(name string, pos token.Pos) (Scope, token.Pos)
 	return nil, token.NoPos
 }
 
-func (s *local) Innermost(pos token.Pos) Scope {
-	if scope, selfMatch := (*scope)(s).innermost(pos); scope != nil {
-		return scope
-	} else if selfMatch {
-		return s
-	}
-	return nil
-}
-
 func (s *local) CanDef(name string, pos token.Pos) bool {
 	// name already defined in this scope.
 	if prev := s.LookupDef(name); prev.IsValid() {
 		return false
 	}
-	// name is used after pos, if a definition of name added here
-	// the reference of that uses will change.
+	// name is used after pos, a newly added definition will shadow it.
 	if scope, _ := s.LookupUseChildren(name, pos); scope != nil {
 		return false
 	}
@@ -272,24 +232,27 @@ func (s *local) CanDef(name string, pos token.Pos) bool {
 }
 
 func (s *local) CanUse(name string, pos token.Pos) bool {
-	// name is already in use, if add a use of name it will
-	// not reference the right target.
+	// name is already in use, the newly added will be shadowed.
 	if s.LookupUse(name) != nil {
 		return false
 	}
-	// there is already an definition of new before pos,
-	// if add a use of name it will not reference the right target.
+	// there is already an definition of name before pos,
+	// the newly added will be shadowed.
 	if def := s.LookupDef(name); def.IsValid() && def < pos {
 		return false
 	}
 	return true
 }
 
+func (s *local) contains(pos token.Pos) bool {
+	return (*scope)(s).contains(pos)
+}
+
 // pkg is a package scope.
 type pkg struct {
 	parent *universe
 	defs   map[string]token.Pos // Definitions in this scope.
-	uses   Uses                 // Usages in this scope.
+	uses   useMap               // Usages in this scope.
 	files  []*file
 }
 
@@ -311,18 +274,9 @@ func (s *pkg) LookupDef(name string) token.Pos {
 	return token.NoPos
 }
 
-func (s *pkg) LookupUse(name string) []Pos {
+func (s *pkg) LookupUse(name string) []defUsePos {
 	if pos := s.uses[name]; pos != nil {
 		return pos
-	}
-	return nil
-}
-
-func (s *pkg) Innermost(pos token.Pos) Scope {
-	for _, file := range s.files {
-		if scope := file.Innermost(pos); scope != nil {
-			return scope
-		}
 	}
 	return nil
 }
@@ -342,7 +296,10 @@ func (s *pkg) CanDef(name string, pos token.Pos) bool {
 		return false
 	}
 	for _, file := range s.files {
-		// name already defined in one file of this package.
+		if !file.contains(pos) {
+			continue
+		}
+		// name already defined in current file.
 		if prev := file.LookupDef(name); prev.IsValid() {
 			return false
 		}
@@ -357,12 +314,24 @@ func (s *pkg) CanUse(name string, pos token.Pos) bool {
 		return false
 	}
 	for _, file := range s.files {
-		// name is already used in one file of this packages ...
+		if !file.contains(pos) {
+			continue
+		}
+		// name is already used in current file ...
 		if file.Parent().LookupUse(name) != nil {
 			return false
 		}
 	}
 	return true
+}
+
+func (s *pkg) contains(pos token.Pos) bool {
+	for _, f := range s.files {
+		if in := f.contains(pos); in {
+			return true
+		}
+	}
+	return false
 }
 
 var universeDefs = make(map[string]token.Pos)
@@ -392,7 +361,7 @@ func (s *universe) LookupDef(name string) token.Pos {
 	return s.pkg.LookupDef(name)
 }
 
-func (s *universe) LookupUse(name string) []Pos {
+func (s *universe) LookupUse(name string) []defUsePos {
 	return s.pkg.LookupUse(name)
 }
 
@@ -408,89 +377,156 @@ func (s *universe) CanUse(name string, pos token.Pos) bool {
 	return false
 }
 
-func (s *universe) Innermost(pos token.Pos) Scope {
-	return s.pkg.Innermost(pos)
-}
-
-type defUse struct {
-	Def types.Object
-	Use *ast.Ident
+func (s *universe) contains(pos token.Pos) bool {
+	return s.pkg.contains(pos)
 }
 
 type idObject struct {
-	ID     *ast.Ident
-	Object types.Object
+	id     *ast.Ident
+	object types.Object
+}
+
+type DefUseScope struct {
+	Use      token.Pos
+	UseScope Scope
+	Def      token.Pos
+}
+
+type UseMap multiMap[DefUseScope]
+
+func (m UseMap) Lookup(name string) []DefUseScope {
+	return multiMap[DefUseScope](m).Lookup(name)
+}
+
+func (m UseMap) Add(name string, obj ...DefUseScope) {
+	multiMap[DefUseScope](m).Add(name, obj...)
+}
+
+func (m UseMap) Rename(name string, def token.Pos, newName string) {
+	uses := m.Lookup(name)
+	equalDef := func(e DefUseScope) bool { return e.Def == def }
+	newUses := slices2.Filter(uses, equalDef)
+	multiMap[DefUseScope](m).DeleteFunc(name, equalDef)
+	if len(newUses) > 0 {
+		m.Add(newName, newUses...)
+	}
+}
+
+type DefMap multiMap[token.Pos]
+
+func (m DefMap) Lookup(name string) []token.Pos {
+	return multiMap[token.Pos](m).Lookup(name)
+}
+
+func (m DefMap) LookupFunc(name string, f func(pos token.Pos) bool) []token.Pos {
+	return multiMap[token.Pos](m).LookupFunc(name, f)
+}
+
+func (m DefMap) Add(name string, pos ...token.Pos) {
+	multiMap[token.Pos](m).Add(name, pos...)
+}
+
+func (m DefMap) DeleteFunc(name string, f func(pos token.Pos) bool) {
+	multiMap[token.Pos](m).DeleteFunc(name, f)
+}
+
+func (m DefMap) Rename(name string, def token.Pos, newName string) {
+	s := m.Lookup(name)
+	newS := slices2.Filter(s, func(pos token.Pos) bool { return pos == def })
+	m.DeleteFunc(name, func(pos token.Pos) bool { return pos == def })
+	if len(newS) > 0 {
+		m.Add(newName, newS...)
+	}
+}
+
+type Info struct {
+	Defs DefMap
+	Uses UseMap
 }
 
 // PackageScope creates the package scope of pkg.
-func PackageScope(p *packages.Package) Scope {
-	var pkg = pkg{
-		uses: make(Uses),
-		defs: make(map[string]token.Pos),
-	}
+func PackageScope(p *packages.Package) (Scope, *Info) {
+	var info = Info{make(DefMap), make(UseMap)}
+	var pkg = pkg{}
 	universe := universe{&pkg}
 	pkg.parent = &universe
 
-	uses := slices.Collect(
-		iter2.Values(
-			iter2.Map2(maps.All(p.TypesInfo.Uses),
-				func(id *ast.Ident, obj types.Object) (struct{}, defUse) {
-					return struct{}{}, defUse{Def: obj, Use: id}
-				})))
-	defs := slices.Collect(iter2.Map2To1(maps.All(p.TypesInfo.Defs), func(id *ast.Ident, obj types.Object) idObject { return idObject{id, obj} }))
+	uses := slices.Collect(iter2.Map2To1(
+		maps.All(p.TypesInfo.Uses),
+		func(id *ast.Ident, obj types.Object) idObject {
+			return idObject{id, obj}
+		}))
+	defs := slices.Collect(iter2.Map2To1(
+		maps.All(p.TypesInfo.Defs),
+		func(id *ast.Ident, obj types.Object) idObject {
+			return idObject{id, obj}
+		}))
 
 	src := p.Types.Scope()
 	m := map[*types.Scope]Scope{src: &pkg}
-	collectDefUses(pkg.defs, pkg.uses, src, &defs, &uses)
+	pkg.defs, pkg.uses = filterDefUses(src, &defs, &uses, &pkg, &info)
 	for fileScope := range src.Children() {
 		var file file
-		newScope(&file, (*scope)(&file), &pkg, fileScope, &defs, &uses, m)
+		newScope(&file, (*scope)(&file), &pkg, fileScope, &defs, &uses, m, &info)
 		m[fileScope] = &file
 		pkg.files = append(pkg.files, &file)
 	}
 	m[types.Universe] = &universe
 	m[src] = &pkg
-	return &pkg
+	return &pkg, &info
 }
 
-func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scope, defs *[]idObject, uses *[]defUse, m map[*types.Scope]Scope) {
+func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scope, defs *[]idObject, uses *[]idObject, m map[*types.Scope]Scope, info *Info) {
 	concreteTarget.m = m
 	concreteTarget.pos = src.Pos()
 	concreteTarget.end = src.End()
 	concreteTarget.parent = parent
-	concreteTarget.defs = make(map[string]token.Pos)
-	concreteTarget.uses = make(Uses)
-
-	collectDefUses(concreteTarget.defs, concreteTarget.uses, src, defs, uses)
+	concreteTarget.defs, concreteTarget.uses = filterDefUses(src, defs, uses, target, info)
 
 	for child := range src.Children() {
 		var local local
-		newScope(&local, (*scope)(&local), target, child, defs, uses, m)
+		newScope(&local, (*scope)(&local), target, child, defs, uses, m, info)
 		m[child] = &local
 		concreteTarget.children = append(concreteTarget.children, &local)
 	}
 }
 
-func collectDefUses(targetDefs map[string]token.Pos, targetUses Uses, src *types.Scope, defs *[]idObject, uses *[]defUse) {
+// filterDefUses finds the definitions and usages that belong to scope and group them by name.
+// The found definitions and usages are deleted form defs and uses.
+func filterDefUses(scope *types.Scope,
+	defs *[]idObject, uses *[]idObject,
+	scopeForInfo Scope, info *Info) (resultDefs map[string]token.Pos, resultUses useMap) {
+	resultDefs = make(map[string]token.Pos)
+	resultUses = make(useMap)
 	for i := len(*defs) - 1; i >= 0; i-- {
-		if def := (*defs)[i]; def.Object == nil {
-			id := def.ID
-			if src.Innermost(id.Pos()) == src {
-				targetDefs[id.Name] = id.Pos()
-				*defs = slices.Delete(*defs, i, i+1)
-			}
-		} else if obj := def.Object; obj.Parent() == src {
-			targetDefs[obj.Name()] = obj.Pos()
+		def := (*defs)[i]
+		if def.id.Name == "." || def.id.Name == "_" {
 			*defs = slices.Delete(*defs, i, i+1)
+			continue
+		}
+		id := def.id
+		if def.object == nil {
+			if scope.Innermost(id.Pos()) == scope {
+				resultDefs[id.Name] = id.Pos()
+				*defs = slices.Delete(*defs, i, i+1)
+				info.Defs.Add(id.Name, id.Pos())
+			}
+		} else if obj := def.object; obj.Parent() == scope {
+			resultDefs[id.Name] = obj.Pos()
+			*defs = slices.Delete(*defs, i, i+1)
+			info.Defs.Add(id.Name, id.Pos())
 		}
 
 	}
 
 	for i := len(*uses) - 1; i >= 0; i-- {
-		if pos := (*uses)[i].Use.Pos(); src.Innermost(pos) == src {
-			use := (*uses)[i]
-			targetUses.Add(use.Use.Name, Pos{Def: use.Def.Pos(), Use: use.Use.Pos()})
+		use := (*uses)[i]
+		if pos := use.id.Pos(); scope.Innermost(pos) == scope {
+			resultUses.Add(use.id.Name, defUsePos{Def: use.object.Pos(), Use: use.id.Pos()})
 			*uses = slices.Delete(*uses, i, i+1)
+			info.Uses.Add(use.id.Name, DefUseScope{Use: use.id.Pos(), Def: use.object.Pos(), UseScope: scopeForInfo})
 		}
 	}
+
+	return
 }
