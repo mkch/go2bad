@@ -2,7 +2,7 @@
 package a
 
 import (
-	"iter"
+	. "iter"
 	"slices"
 
 	it2 "github.com/mkch/iter2"
@@ -41,11 +41,11 @@ func Return2() (n int) {
 
 type a[T any] struct{ a T }
 
-func concat(seqs ...iter.Seq[int]) iter.Seq[int] {
+func concat(seqs ...Seq[int]) Seq[int] {
 	var unused a[string]
 	unused.a = ""
 	_ = unused
-	var args []iter.Seq[int] = seqs
+	var args []Seq[int] = seqs
 	return it2.Concat(args...)
 }
 

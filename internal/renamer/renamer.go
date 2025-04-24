@@ -13,13 +13,13 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-type renamer struct {
+type defRenamer struct {
 	pkgScope scope.Scope
 	info     *scope.Info
 }
 
 func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, keep func(pkg, name string) bool) func(id *ast.Ident, usePos token.Pos) {
-	var renamer renamer
+	var renamer defRenamer
 	renamer.pkgScope, renamer.info = scope.PackageScope(pkg)
 
 	renamed := make(map[token.Pos]string)
@@ -29,18 +29,29 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 	}
 
 	for id, def := range pkg.TypesInfo.Defs {
-		if id.Name == "." || id.Name == "_" || def == nil || isInitFunc(def) {
+		if id.Name == "." || id.Name == "_" {
 			continue
 		}
 		if keep(pkg.PkgPath, id.Name) {
 			continue
 		}
-		if def.Parent() == nil { // methods and struct fields.
+		var exported bool
+		if def == nil {
+			if !renamer.isSymbolic(id) {
+				continue
+			}
+		} else {
+			exported = def.Parent() == pkg.Types.Scope() && id.IsExported()
+			if isInitFunc(def) {
+				continue
+			} else if def.Parent() == nil { // methods and struct fields.
+				continue
+			}
+		}
+		if exported && !renameExported {
 			continue
 		}
 		var next func() string
-		exported := renameExported &&
-			def.Parent() == pkg.Types.Scope() && id.IsExported()
 		if exported {
 			next = idGen.NewExported(nil)
 		} else {
@@ -51,7 +62,7 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 			if id.Name == newName {
 				break
 			}
-			if renamer.Rename(id, def, newName) {
+			if renamer.Rename(id, newName) {
 				renamed[id.Pos()] = newName
 				if exported {
 					xRenamed[id.Pos()] = newName
@@ -77,7 +88,7 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 	}
 }
 
-func (renamer *renamer) canRenameTo(name string, defPos token.Pos, defParent scope.Scope, newName string) bool {
+func (renamer *defRenamer) canRenameTo(name string, defPos token.Pos, defParent scope.Scope, newName string) bool {
 	if !defParent.CanDef(newName, defPos) {
 		return false
 	}
@@ -92,14 +103,23 @@ func (renamer *renamer) canRenameTo(name string, defPos token.Pos, defParent sco
 	return true
 }
 
-func (renamer *renamer) Rename(id *ast.Ident, defObj types.Object, newName string) bool {
-	if !renamer.canRenameTo(id.Name, id.Pos(), renamer.pkgScope.Scope(defObj.Parent()), newName) {
+// isSymbolic returns whether id denotes to a symbolic variable.
+//
+// Symbolic variable is the variable t in t := x.(type) of type switch headers.
+func (renamer *defRenamer) isSymbolic(id *ast.Ident) (symbolic bool) {
+	_, symbolic = renamer.info.NilDefObjects[id].(*types.Var)
+	return
+}
+
+func (defRenamer *defRenamer) Rename(id *ast.Ident, newName string) bool {
+	scope := defRenamer.info.DefScopes[id]
+	if !defRenamer.canRenameTo(id.Name, id.Pos(), scope, newName) {
 		return false
 	}
 
-	renamer.pkgScope.Scope(defObj.Parent()).RenameChildren(id.Name, defObj.Pos(), newName)
-	renamer.info.Uses.Rename(id.Name, defObj.Pos(), newName)
-	renamer.info.Defs.Rename(id.Name, defObj.Pos(), newName)
+	scope.RenameChildren(id.Name, id.Pos(), newName)
+	defRenamer.info.Uses.Rename(id.Name, id.Pos(), newName)
+	defRenamer.info.Defs.Rename(id.Name, id.Pos(), newName)
 
 	id.Name = newName
 	return true
