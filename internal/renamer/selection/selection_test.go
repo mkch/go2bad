@@ -1,6 +1,9 @@
 package selection
 
-import "testing"
+import (
+	"go/types"
+	"testing"
+)
 
 func TestSelection(t *testing.T) {
 	var s1 = newStruct()
@@ -198,15 +201,16 @@ func TestPrompt(t *testing.T) {
 }
 
 func TestIface(t *testing.T) {
+	sig := types.NewSignatureType(nil, nil, nil, nil, nil, false)
 	var i1 = newIface()
-	i1.AddMethod("f1")
+	i1.AddMethod("f1", sig)
 
 	var i2 = newIface()
-	i2.AddMethod("f2")
+	i2.AddMethod("f2", sig)
 	i2.AddEmbedded(i1)
 
 	var i3 = newIface()
-	i3.AddMethod("f3")
+	i3.AddMethod("f3", sig)
 	i3.AddEmbedded(newDefined(i2))
 	if i := field(i3, "a"); i != -1 {
 		t.Fatal(i)
@@ -219,6 +223,12 @@ func TestIface(t *testing.T) {
 	}
 	if i := method(i3, "f3"); i != 0 {
 		t.Fatal(i)
+	}
+	if can := i3.CanRenameTo("f3", "f2"); can {
+		t.Fatal(can)
+	}
+	if can := i3.CanRenameTo("f3", "fff"); !can {
+		t.Fatal(can)
 	}
 
 	var d3 = newDefined(i3)

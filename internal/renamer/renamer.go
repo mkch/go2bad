@@ -131,7 +131,7 @@ func (renamer *defRenamer) isSymbolic(def *ast.Ident) (symbolic bool) {
 //
 // Scoped identifiers are identifiers that are not fields nor methods.
 func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) bool {
-	if !renamer.sel.CanRenameEmbedded(id.Pos(), newName) {
+	if !renamer.sel.CanRenameEmbedded(id.Pos(), id.Name, newName) {
 		return false
 	}
 	scope := renamer.info.DefScopes[id]

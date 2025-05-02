@@ -216,19 +216,19 @@ func (t *st) AddEmbedded(name string, embed typ) {
 
 // iface is an interface [typ].
 type iface struct {
-	methods  gg.Set[string]
+	methods  map[string]*types.Signature // name -> signature
 	embedded []*iface
 }
 
 func newIface() *iface {
 	return &iface{
-		make(gg.Set[string]),
+		make(map[string]*types.Signature),
 		nil,
 	}
 }
 
-func (t *iface) AddMethod(name string) {
-	t.methods.Add(name)
+func (t *iface) AddMethod(name string, signature *types.Signature) {
+	t.methods[name] = signature
 }
 
 func (t *iface) AddEmbedded(e typ) {
@@ -244,6 +244,30 @@ func (t *iface) AddEmbedded(e typ) {
 	t.embedded = append(t.embedded, i)
 }
 
+func findSignatures(embedded []*iface, name string, ret *[]*types.Signature) {
+	for _, embedded := range embedded {
+		if sig := embedded.methods[name]; sig != nil {
+			*ret = append(*ret, sig)
+		}
+		findSignatures(embedded.embedded, name, ret)
+	}
+}
+
+func (t *iface) CanRenameTo(name, newName string) bool {
+	if _, exists := t.methods[newName]; exists {
+		return false
+	}
+	oldSig := t.methods[name]
+	var signatures []*types.Signature
+	findSignatures(t.embedded, newName, &signatures)
+	if len(signatures) == 0 {
+		return true
+	}
+	// interface and its embedded interfaces can have duplicated methods with the same signature.
+	hasDifferentSig := slices.ContainsFunc(signatures, func(e *types.Signature) bool { return !types.Identical(e, oldSig) })
+	return !hasDifferentSig
+}
+
 func (t *iface) ptrField(name string, visited gg.Set[typ]) (depth int) {
 	return -1
 }
@@ -257,7 +281,7 @@ func (t *iface) ptrMethod(name string, visited gg.Set[typ]) (depth int) {
 }
 
 func (t *iface) method(name string, visited gg.Set[typ]) (depth int) {
-	if t.methods.Contains(name) {
+	if _, contains := t.methods[name]; contains {
 		return 0
 	}
 	i := slices.IndexFunc(t.embedded, func(e *iface) bool { return e.method(name, visited) > -1 })
@@ -392,7 +416,7 @@ func addType(tm typeMap, cm compositeMap, fmm fieldMethodMap, t types.Type) *cha
 		ret := &chainedType{t: chainType}
 		tm[k] = ret
 		for mtd := range t.ExplicitMethods() {
-			chainType.AddMethod(mtd.Name())
+			chainType.AddMethod(mtd.Name(), mtd.Signature())
 			fmm[mtd.Pos()] = ret
 		}
 		for embed := range t.EmbeddedTypes() {
@@ -486,7 +510,7 @@ func HasName(t typ, name string) (depth int) {
 
 // RenameEmbedded returns whether embedded fields of type T which is defined at a specified position
 // can be renamed to a new name.
-func (sel *Selection) CanRenameEmbedded(def token.Pos, newName string) bool {
+func (sel *Selection) CanRenameEmbedded(def token.Pos, name, newName string) bool {
 	// canRename returns whether the embedded fields of type t
 	// can be renamed to a new name.
 	canRename := func(t *chainedType) bool {
@@ -494,7 +518,7 @@ func (sel *Selection) CanRenameEmbedded(def token.Pos, newName string) bool {
 			if _, isInterface := embeder.t.(*iface); isInterface {
 				continue
 			}
-			if !canRenameSelTo(embeder, newName) {
+			if !canRenameSelTo(embeder, name, newName) {
 				return false
 			}
 		}
@@ -540,13 +564,22 @@ func (sel *Selection) RenameEmbedded(def token.Pos, newName string) {
 }
 
 // canRenameSelTo returns whether a method or field in t can be renamed to new name.
-func canRenameSelTo(t *chainedType, name string) bool {
-	// TODO: interface and its embedded interfaces can have duplicated methods with the same signature.
-	if HasName(t.t, name) > -1 {
+func canRenameSelTo(t *chainedType, name, newName string) bool {
+	var face *iface
+	if defined, _ := t.t.(*defined); defined != nil {
+		face, _ = defined.underlying.(*iface)
+	} else {
+		face, _ = t.t.(*iface)
+	}
+	if face != nil {
+		return face.CanRenameTo(name, newName)
+	}
+
+	if HasName(t.t, newName) > -1 {
 		return false
 	}
 	for _, t := range t.embeders {
-		if HasName(t.t, name) > -1 {
+		if HasName(t.t, newName) > -1 {
 			return false
 		}
 	}
@@ -557,7 +590,7 @@ func canRenameSelTo(t *chainedType, name string) bool {
 // The return value indicates whether the field or method is renamed successfully.
 func (sel *Selection) Rename(name string, pos token.Pos, newName string) bool {
 	t := sel.fmm[pos]
-	if !canRenameSelTo(t, newName) {
+	if !canRenameSelTo(t, name, newName) {
 		return false
 	}
 
@@ -603,11 +636,12 @@ func renamePtrSel(t *ptr, name, newName string) bool {
 }
 
 func renameInterfaceMethod(t *iface, name, newName string) bool {
-	if !t.methods.Contains(name) {
+	signature := t.methods[name]
+	if signature == nil {
 		return false
 	}
-	t.methods.Delete(name)
-	t.methods.Add(newName)
+	delete(t.methods, name)
+	t.methods[newName] = signature
 	return true
 }
 

@@ -17,6 +17,10 @@ func (v t1) value() int {
 	return int(v)
 }
 
+func (v t1) a() int {
+	return int(v)
+}
+
 type t2 struct {
 	t1
 }
@@ -25,7 +29,12 @@ func (v t2) value2() int {
 	return 0
 }
 
+type I1 interface {
+	a() int
+}
+
 type intValuer interface {
+	I1
 	value() int
 }
 
