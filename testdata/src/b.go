@@ -30,3 +30,9 @@ var f3 = func() {
 
 // T1 doc
 type T1 int
+
+type T2 struct {
+	a int
+	b string
+	intValuer
+}

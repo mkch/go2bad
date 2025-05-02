@@ -13,6 +13,27 @@ import (
 // t1 is int
 type t1 int
 
+func (v t1) value() int {
+	return int(v)
+}
+
+type t2 struct {
+	t1
+}
+
+func (v t2) value2() int {
+	return 0
+}
+
+type intValuer interface {
+	value() int
+}
+
+type iface1 interface {
+	value() byte
+	f(a int)
+}
+
 var v1 t1 = 0
 
 var x = 1
@@ -26,8 +47,9 @@ func return1() int {
 
 
 	 */
-	var v1 byte = byte(v1)   // v1 shadows v1
-	return int(v1 + byte(x)) // ret
+	var v1valuer intValuer = v1
+	var v1 byte = byte(v1valuer.value()) // v1 shadows v1
+	return int(v1 + byte(x))             // ret
 }
 
 func Return2() (n int) {
@@ -39,7 +61,17 @@ func Return2() (n int) {
 	return
 }
 
+type Int = int
+
 type a[T any] struct{ a T }
+
+func (a[T]) value() Int {
+	return 0
+}
+
+func (a[T]) f(b T) {
+
+}
 
 func concat(seqs ...Seq[int]) Seq[int] {
 	var unused a[string]

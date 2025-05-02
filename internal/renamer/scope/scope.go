@@ -442,12 +442,15 @@ type Info struct {
 	Defs          DefMap
 	Uses          UseMap
 	DefScopes     map[*ast.Ident]Scope        // Def ID -> Scope
-	NilDefObjects map[*ast.Ident]types.Object // Def ID without types.Object -> types.Object of it's use.
+	DefNonObjects map[*ast.Ident]types.Object // Def ID without types.Object -> Object of it's use.
 }
 
 // PackageScope creates the package scope of pkg.
 func PackageScope(p *packages.Package) (Scope, *Info) {
-	var info = Info{make(DefMap), make(UseMap), make(map[*ast.Ident]Scope), make(map[*ast.Ident]types.Object)}
+	var info = Info{Defs: make(DefMap),
+		Uses:      make(UseMap),
+		DefScopes: make(map[*ast.Ident]Scope),
+	}
 	var pkg = pkg{}
 	universe := universe{&pkg}
 	pkg.parent = &universe
@@ -462,10 +465,10 @@ func PackageScope(p *packages.Package) (Scope, *Info) {
 		func(id *ast.Ident, obj types.Object) idObject {
 			return idObject{id, obj}
 		}))
-
+	info.DefNonObjects = filterDefs(&defs, uses)
 	src := p.Types.Scope()
 	m := map[*types.Scope]Scope{src: &pkg}
-	pkg.defs, pkg.uses = filterDefUses(src, &pkg, &defs, &uses, &info)
+	pkg.defs, pkg.uses = scopeDefUses(src, &pkg, &defs, &uses, &info)
 	for fileScope := range src.Children() {
 		var file file
 		newScope(&file, (*scope)(&file), &pkg, fileScope, &defs, &uses, m, &info)
@@ -482,7 +485,7 @@ func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scop
 	concreteTarget.pos = src.Pos()
 	concreteTarget.end = src.End()
 	concreteTarget.parent = parent
-	concreteTarget.defs, concreteTarget.uses = filterDefUses(src, target, defs, uses, info)
+	concreteTarget.defs, concreteTarget.uses = scopeDefUses(src, target, defs, uses, info)
 
 	for child := range src.Children() {
 		var local local
@@ -492,33 +495,51 @@ func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scop
 	}
 }
 
-// filterDefUses finds the definitions and usages that belong to the source scope and group them by name.
+// filterDefs filters out non-renamable identifiers("." and "_"), and returns non-object declarations and fields/methods.
+func filterDefs(defs *[]idObject, uses []idObject) (nonObjects map[*ast.Ident]types.Object) {
+	nonObjects = make(map[*ast.Ident]types.Object)
+	for i := len(*defs) - 1; i >= 0; i-- {
+		id, object := (*defs)[i].id, (*defs)[i].object
+		if id.Name == "." || id.Name == "_" {
+			*defs = slices.Delete(*defs, i, i+1)
+			continue
+		}
+		if object == nil {
+			// package name a in "package a" clause
+			// or symbolic name t in "t := x.(type)" of type switch header.
+			object := findUse(uses, id.Pos())
+			if object != nil {
+				nonObjects[id] = object
+			}
+			// Do not delete def from defs.
+		} else if object.Parent() == nil {
+			// field or method
+			// if _, isField := object.(*types.Var); isField {
+			// 	fields[id] = object
+			// } else {
+			// 	methods.Add(object.(*types.Func))
+			// }
+			*defs = slices.Delete(*defs, i, i+1)
+		}
+	}
+	return
+}
+
+// scopeDefUses finds the definitions and usages that belong to the source scope and group them by name.
 // The found definitions and usages are deleted form defs and uses.
-func filterDefUses(src *types.Scope, target Scope,
+func scopeDefUses(src *types.Scope, target Scope,
 	defs *[]idObject, uses *[]idObject,
 	info *Info) (resultDefs map[string]token.Pos, resultUses useMap) {
 	resultDefs = make(map[string]token.Pos)
 	resultUses = make(useMap)
 	for i := len(*defs) - 1; i >= 0; i-- {
 		def := (*defs)[i]
-		if def.id.Name == "." || def.id.Name == "_" {
-			*defs = slices.Delete(*defs, i, i+1)
-			continue
-		}
 		id, obj := def.id, def.object
 		if obj != nil && obj.Parent() == src || src.Innermost(id.Pos()) == src {
 			resultDefs[id.Name] = id.Pos()
 			*defs = slices.Delete(*defs, i, i+1)
 			info.Defs.Add(id.Name, id.Pos())
 			info.DefScopes[id] = target
-		}
-		if obj == nil {
-			for _, use := range *uses {
-				if use.object.Pos() == id.Pos() {
-					info.NilDefObjects[id] = use.object
-					break
-				}
-			}
 		}
 	}
 
@@ -532,4 +553,14 @@ func filterDefUses(src *types.Scope, target Scope,
 	}
 
 	return
+}
+
+// findUse find an usage of definition in uses.
+func findUse(uses []idObject, def token.Pos) types.Object {
+	for _, use := range uses {
+		if use.object.Pos() == def {
+			return use.object
+		}
+	}
+	return nil
 }
