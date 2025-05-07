@@ -18,7 +18,7 @@ import (
 
 	"github.com/mkch/gg"
 	filepath2 "github.com/mkch/gg/filepath"
-	os2 "github.com/mkch/gg/os"
+	"github.com/mkch/gg/os2"
 	"github.com/mkch/go2bad/internal/comments"
 	"github.com/mkch/go2bad/internal/flags"
 	"github.com/mkch/go2bad/internal/idgen"

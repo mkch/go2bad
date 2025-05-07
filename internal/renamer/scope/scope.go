@@ -7,7 +7,7 @@ import (
 	"maps"
 	"slices"
 
-	slices2 "github.com/mkch/gg/slices"
+	"github.com/mkch/gg/slices2"
 	"github.com/mkch/iter2"
 	"golang.org/x/tools/go/packages"
 )

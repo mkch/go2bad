@@ -3,7 +3,7 @@ module github.com/mkch/go2bad
 go 1.24.0
 
 require (
-	github.com/mkch/gg v0.0.0-20250420115450-83650335f279
+	github.com/mkch/gg v0.0.0-20250504154157-7692da2ff454
 	golang.org/x/tools v0.32.0
 )
 

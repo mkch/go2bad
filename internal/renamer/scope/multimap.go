@@ -1,6 +1,6 @@
 package scope
 
-import slices2 "github.com/mkch/gg/slices"
+import "github.com/mkch/gg/slices2"
 
 // multiMap is a generic map that associates string keys with slices of values of type T.
 type multiMap[T any] map[string][]T
@@ -20,4 +20,3 @@ func (m multiMap[T]) Add(name string, pos ...T) {
 	old := m.Lookup(name)
 	m[name] = append(old, pos...)
 }
-
