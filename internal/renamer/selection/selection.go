@@ -128,11 +128,13 @@ func cmpTypeName(t typeName, name string) int {
 type st struct {
 	fields   gg.Set[string]
 	embedded []typeName
+	defined  []*defined // defined types whose underlying type is st.
 }
 
 func newStruct() *st {
 	return &st{
 		make(gg.Set[string]),
+		nil,
 		nil,
 	}
 }
@@ -157,7 +159,21 @@ func (t *st) ptrField(name string, visited gg.Set[typ]) (depth int) {
 }
 
 func (t *st) method(name string, visited gg.Set[typ]) (depth int) {
-	return t.promoted(func(embed typeName, visited gg.Set[typ]) int { return embed.t.method(name, visited) }, visited)
+	if depth = t.promoted(func(embed typeName, visited gg.Set[typ]) int { return embed.t.method(name, visited) }, visited); depth > -1 {
+		return
+	}
+	// methods of defined types can also conflict with the field of underlying struct.
+	if visited.Contains(t) {
+		return -1
+	}
+	visited.Add(t)
+	defer visited.Delete(t)
+	for _, d := range t.defined {
+		if depth = d.ptrMethod(name, visited); depth > -1 {
+			return
+		}
+	}
+	return -1
 }
 
 // promoted returns the shallowest depth of a field or method in t.embedded that matches f.
@@ -354,7 +370,12 @@ func addType(tm typeMap, cm compositeMap, fmm fieldMethodMap, t types.Type) *cha
 		ret := &chainedType{t: chainType}
 		tm[k] = ret
 		name := t.Obj()
-		chainType.SetUnderlying(addType(tm, cm, fmm, name.Type().Underlying()).Type())
+		u := addType(tm, cm, fmm, name.Type().Underlying()).Type()
+		if st, _ := u.(*st); st != nil {
+			// add defined types to underlying struct
+			st.defined = append(st.defined, chainType)
+		}
+		chainType.SetUnderlying(u)
 		return ret
 	case *types.Pointer:
 		k := typeKey{Ptr: true}
