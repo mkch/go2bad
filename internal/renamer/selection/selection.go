@@ -470,10 +470,10 @@ func New(pkg *packages.Package) *Selection {
 		addType(tm, cm, fmm, t)
 	}
 	for _, def := range pkg.TypesInfo.Defs {
-		if def, _ := def.(*types.Func); def != nil { // methods
+		if def, _ := def.(*types.Func); def != nil { // methods or funcs
 			recv := def.Signature().Recv()
 			if recv == nil {
-				continue
+				continue // skip funcs
 			}
 			t := addType(tm, cm, fmm, recv.Type())
 			fmm[def.Pos()] = t
@@ -501,11 +501,11 @@ func method(t typ, name string) (depth int) {
 }
 
 // HasName returns whether the type t has a field or method with the given name.
-func HasName(t typ, name string) (depth int) {
-	if depth = field(t, name); depth > -1 {
-		return
+func HasName(t typ, name string) bool {
+	if depth := field(t, name); depth > -1 {
+		return true
 	}
-	return method(t, name)
+	return method(t, name) > -1
 }
 
 // RenameEmbedded returns whether embedded fields of type T which is defined at a specified position
@@ -575,27 +575,28 @@ func canRenameSelTo(t *chainedType, name, newName string) bool {
 		return face.CanRenameTo(name, newName)
 	}
 
-	if HasName(t.t, newName) > -1 {
+	if HasName(t.t, newName) {
 		return false
 	}
 	for _, t := range t.embeders {
-		if HasName(t.t, newName) > -1 {
+		if HasName(t.t, newName) {
 			return false
 		}
 	}
 	return true
 }
 
-// Rename tries to rename a field or method defined at a specified position to a new name.
-// The return value indicates whether the field or method is renamed successfully.
-func (sel *Selection) Rename(name string, pos token.Pos, newName string) bool {
+// CanRenameFieldMethod returns whether a field or method defined at a specified position
+// can be renamed to a new name.
+func (sel *Selection) CanRenameFieldMethod(name string, pos token.Pos, newName string) bool {
 	t := sel.fmm[pos]
-	if !canRenameSelTo(t, name, newName) {
-		return false
-	}
+	return canRenameSelTo(t, name, newName)
+}
 
+// RenameFieldMethod renames a field or method defined at a specified position to a new name.
+func (sel *Selection) RenameFieldMethod(name string, pos token.Pos, newName string) {
 	var renamed bool
-	switch t := t.t.(type) {
+	switch t := sel.fmm[pos].t.(type) {
 	case *defined:
 		renamed = renameDefinedSel(t, name, newName)
 	case *st:
@@ -608,7 +609,6 @@ func (sel *Selection) Rename(name string, pos token.Pos, newName string) bool {
 	if !renamed {
 		panic("rename failed")
 	}
-	return true
 }
 
 func renameStructField(t *st, name, newName string) bool {

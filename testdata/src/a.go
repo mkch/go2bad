@@ -74,7 +74,7 @@ type Int = int
 
 type a[T any] struct{ a T }
 
-func (a[T]) value() Int {
+func (a[T]) abcdef() Int {
 	return 0
 }
 

@@ -2,26 +2,36 @@
 package renamer
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"regexp"
 	"strings"
 
 	"github.com/mkch/go2bad/internal/idgen"
 	"github.com/mkch/go2bad/internal/renamer/scope"
 	"github.com/mkch/go2bad/internal/renamer/selection"
+	"github.com/mkch/iter2"
 	"golang.org/x/tools/go/packages"
 )
 
 type defRenamer struct {
-	pkgScope scope.Scope
-	info     *scope.Info
-	sel      *selection.Selection
+	pkgScope    scope.Scope
+	info        *scope.Info
+	sel         *selection.Selection
+	methodGroup map[token.Pos][]selection.Method
 }
 
 func newDefRenamer(pkg *packages.Package) *defRenamer {
 	renamer := &defRenamer{sel: selection.New(pkg)}
+	renamer.methodGroup = maps.Collect(iter2.Map2(
+		maps.All(selection.GroupMethod(pkg.TypesInfo.Defs)),
+		func(k *types.Func, v []selection.Method) (token.Pos, []selection.Method) {
+			pos := k.Pos()
+			return pos, v
+		}))
 	renamer.pkgScope, renamer.info = scope.PackageScope(pkg)
 	return renamer
 }
@@ -36,6 +46,9 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 	}
 
 	for id, def := range pkg.TypesInfo.Defs {
+		if _, alreadyRenamed := renamed[id.Pos()]; alreadyRenamed {
+			continue
+		}
 		if id.Name == "." || id.Name == "_" {
 			continue
 		}
@@ -78,8 +91,10 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 			if id.Name == newName {
 				break
 			}
-			if rename(id, newName) {
-				renamed[id.Pos()] = newName
+			if result := rename(id, newName); len(result) > 0 {
+				for _, r := range result {
+					renamed[r.Pos()] = newName
+				}
 				if exported {
 					xRenamed[id.Pos()] = newName
 				}
@@ -130,13 +145,13 @@ func (renamer *defRenamer) isSymbolic(def *ast.Ident) (symbolic bool) {
 // RenameScoped renames an scoped identifier to new name.
 //
 // Scoped identifiers are identifiers that are not fields nor methods.
-func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) bool {
+func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) (renamed []*ast.Ident) {
 	if !renamer.sel.CanRenameEmbedded(id.Pos(), id.Name, newName) {
-		return false
+		return
 	}
 	scope := renamer.info.DefScopes[id]
 	if !renamer.canRenameScoped(id.Name, id.Pos(), scope, newName) {
-		return false
+		return
 	}
 
 	scope.RenameChildren(id.Name, id.Pos(), newName)
@@ -144,15 +159,35 @@ func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) bool {
 	renamer.info.Defs.Rename(id.Name, id.Pos(), newName)
 	id.Name = newName
 	renamer.sel.RenameEmbedded(id.Pos(), newName)
-	return true
+	return []*ast.Ident{id}
 }
 
-func (renamer *defRenamer) RenameFieldMethod(id *ast.Ident, newName string) bool {
-	if !renamer.sel.Rename(id.Name, id.Pos(), newName) {
-		return false
+func (renamer *defRenamer) RenameFieldMethod(id *ast.Ident, newName string) (renamed []*ast.Ident) {
+	if id.Name == "abcdef" {
+		fmt.Println(id)
 	}
+	methodsImplSame := renamer.methodGroup[id.Pos()]
+	if len(methodsImplSame) > 0 { // method
+		for _, mtd := range methodsImplSame {
+			if !renamer.sel.CanRenameFieldMethod(id.Name, mtd.ID.Pos(), newName) {
+				return
+			}
+		}
+		for _, mtd := range methodsImplSame {
+			renamer.sel.RenameFieldMethod(mtd.ID.Name, mtd.ID.Pos(), newName)
+			mtd.ID.Name = newName
+			renamed = append(renamed, mtd.ID)
+		}
+		return
+	}
+	// field
+	if !renamer.sel.CanRenameFieldMethod(id.Name, id.Pos(), newName) {
+		return
+	}
+	renamer.sel.RenameFieldMethod(id.Name, id.Pos(), newName)
 	id.Name = newName
-	return true
+	renamed = append(renamed, id)
+	return
 
 }
 

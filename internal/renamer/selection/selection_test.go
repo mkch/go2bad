@@ -224,7 +224,9 @@ func TestIface(t *testing.T) {
 	if i := method(i3, "f3"); i != 0 {
 		t.Fatal(i)
 	}
-	if can := i3.CanRenameTo("f3", "f2"); can {
+	if can := i3.CanRenameTo("f3", "f2"); !can {
+		// duplicated methods in an interface
+		//  and its embeds with the same signature is allowed.
 		t.Fatal(can)
 	}
 	if can := i3.CanRenameTo("f3", "fff"); !can {
