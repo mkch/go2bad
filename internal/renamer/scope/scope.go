@@ -14,6 +14,7 @@ import (
 
 // Scope is a lexical scope of go source code.
 type Scope interface {
+	// Parent returns the parent scope of this scope. Nil if this scope is universe.
 	Parent() Scope
 	// LookupDef returns the position of definition of name in this scope.
 	// If the name is not defined in this scope, ([token.NoPos], false) is returned.
@@ -205,19 +206,21 @@ func (s *local) Scope(src *types.Scope) Scope {
 	return (*scope)(s).Scope(src)
 }
 
-func (s *local) LookupUseChildren(name string, pos token.Pos) (Scope, token.Pos) {
+// LookupUseChildren searches for a usage of the given name that occurs after the specified position
+// within the current scope or any of its child scopes.  If no such usage is found, it returns nil.
+func (s *local) LookupUseChildren(name string, pos token.Pos) Scope {
 	for _, use := range s.uses.Lookup(name) {
 		if !pos.IsValid() || use.Use > pos {
-			return s, use.Use
+			return s
 		}
 	}
 
 	for _, child := range s.children {
-		if scope, pos := child.LookupUseChildren(name, pos); scope != nil {
-			return scope, pos
+		if scope := child.LookupUseChildren(name, pos); scope != nil {
+			return scope
 		}
 	}
-	return nil, token.NoPos
+	return nil
 }
 
 func (s *local) CanDef(name string, pos token.Pos) bool {
@@ -226,10 +229,25 @@ func (s *local) CanDef(name string, pos token.Pos) bool {
 		return false
 	}
 	// name is used after pos, a newly added definition will shadow it.
-	if scope, _ := s.LookupUseChildren(name, pos); scope != nil {
+	if s.LookupUseChildren(name, pos) != nil {
 		return false
 	}
 	return true
+}
+
+// lookupDefParent looks for a name in recursive parents of s(including s itself).
+// If a name is found and the found position is less than pos, the scope contains that
+// name is returned.
+func (s *local) lookupDefParent(name string, pos token.Pos) Scope {
+	if found := s.LookupDef(name); found.IsValid() && found < pos {
+		return s
+	}
+	for s := s.Parent(); s != nil; s = s.Parent() {
+		if found := s.LookupDef(name); found.IsValid() && found < pos {
+			return s
+		}
+	}
+	return nil
 }
 
 func (s *local) CanUse(name string, pos token.Pos) bool {
@@ -239,7 +257,7 @@ func (s *local) CanUse(name string, pos token.Pos) bool {
 	}
 	// there is already an definition of name before pos,
 	// the newly added will be shadowed.
-	if def := s.LookupDef(name); def.IsValid() && def < pos {
+	if s.lookupDefParent(name, pos) != nil {
 		return false
 	}
 	return true
@@ -297,7 +315,6 @@ func (s *pkg) CanDef(name string, pos token.Pos) bool {
 		return false
 	}
 	for _, file := range s.files {
-
 		// name already defined in current file.
 		if prev := file.LookupDef(name); prev.IsValid() {
 			return false
@@ -333,6 +350,7 @@ func (s *pkg) contains(pos token.Pos) bool {
 	return false
 }
 
+// universeDefs is the definitions in types.Universe.
 var universeDefs = make(map[string]token.Pos)
 
 func init() {
@@ -341,6 +359,8 @@ func init() {
 	}
 }
 
+// universe is the parent scope of a certain package.
+// Note: it is not the parent scope of every package scopes.
 type universe struct {
 	pkg *pkg
 }
@@ -401,10 +421,10 @@ func (m UseMap) Add(name string, obj ...Use) {
 	multiMap[Use](m).Add(name, obj...)
 }
 
+// Rename updates the mapping of a given name to a new name for all uses defined at the specified position.
 func (m UseMap) Rename(name string, def token.Pos, newName string) {
-	uses := m.Lookup(name)
 	equalDef := func(e Use) bool { return e.Def == def }
-	newUses := slices2.Filter(uses, equalDef)
+	newUses := slices2.Filter(m.Lookup(name), equalDef)
 	multiMap[Use](m).DeleteFunc(name, equalDef)
 	if len(newUses) > 0 {
 		m.Add(newName, newUses...)
@@ -429,12 +449,13 @@ func (m DefMap) DeleteFunc(name string, f func(pos token.Pos) bool) {
 	multiMap[token.Pos](m).DeleteFunc(name, f)
 }
 
+// Rename changes the name of a definition defined at the specified position to a new name.
 func (m DefMap) Rename(name string, def token.Pos, newName string) {
-	s := m.Lookup(name)
-	newS := slices2.Filter(s, func(pos token.Pos) bool { return pos == def })
-	m.DeleteFunc(name, func(pos token.Pos) bool { return pos == def })
-	if len(newS) > 0 {
-		m.Add(newName, newS...)
+	equalDef := func(pos token.Pos) bool { return pos == def }
+	defs := slices2.Filter(m.Lookup(name), equalDef)
+	m.DeleteFunc(name, equalDef)
+	if len(defs) > 0 {
+		m.Add(newName, defs...)
 	}
 }
 
@@ -471,7 +492,20 @@ func PackageScope(p *packages.Package) (Scope, *Info) {
 	pkg.defs, pkg.uses = scopeDefUses(src, &pkg, &defs, &uses, &info)
 	for fileScope := range src.Children() {
 		var file file
+		var imports = make(map[string]token.Pos)
+		// Find out all imported package names.
+		for _, use := range uses {
+			if !fileScope.Contains(use.object.Pos()) {
+				continue // imported package names only used in the file imports it.
+			}
+			if _, isPkgName := use.object.(*types.PkgName); isPkgName {
+				imports[use.id.Name] = use.object.Pos()
+			}
+		}
 		newScope(&file, (*scope)(&file), &pkg, fileScope, &defs, &uses, m, &info)
+		// Imported packages with explicit names are also added to file.defs by
+		// scopeDefUses(called in newScope). But it' OK because file.defs is a map.
+		maps.Insert(file.defs, maps.All(imports))
 		m[fileScope] = &file
 		pkg.files = append(pkg.files, &file)
 	}
@@ -495,7 +529,7 @@ func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scop
 	}
 }
 
-// filterDefs filters out non-renamable identifiers("." and "_"), and returns non-object declarations and fields/methods.
+// filterDefs filters out non-renamable identifiers("." and "_") and fields and methods. The return value is the non-object declarations.
 func filterDefs(defs *[]idObject, uses []idObject) (nonObjects map[*ast.Ident]types.Object) {
 	nonObjects = make(map[*ast.Ident]types.Object)
 	for i := len(*defs) - 1; i >= 0; i-- {
@@ -509,16 +543,12 @@ func filterDefs(defs *[]idObject, uses []idObject) (nonObjects map[*ast.Ident]ty
 			// or symbolic name t in "t := x.(type)" of type switch header.
 			object := findUse(uses, id.Pos())
 			if object != nil {
-				nonObjects[id] = object
+				nonObjects[id] = object // symbolic
+			} else {
+				*defs = slices.Delete(*defs, i, i+1) // package name
 			}
 			// Do not delete def from defs.
 		} else if object.Parent() == nil {
-			// field or method
-			// if _, isField := object.(*types.Var); isField {
-			// 	fields[id] = object
-			// } else {
-			// 	methods.Add(object.(*types.Func))
-			// }
 			*defs = slices.Delete(*defs, i, i+1)
 		}
 	}

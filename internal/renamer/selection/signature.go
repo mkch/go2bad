@@ -1,14 +1,18 @@
 package selection
 
 import (
+	"fmt"
 	"go/ast"
 	"go/types"
+	"maps"
 	"slices"
+
+	"github.com/mkch/gg"
 )
 
-// implSameMethod checks if two methods may implement the same interface method.
+// implSameMethod checks if two methods can implement a same interface method.
 func implSameMethod(mtd1, mtd2 *types.Func) bool {
-	if mtd1.Name() != mtd2.Name() {
+	if mtd1.Id() != mtd2.Id() {
 		return false
 	}
 	sig1, sig2 := mtd1.Signature(), mtd2.Signature()
@@ -132,16 +136,19 @@ func matchType(t1, t2 types.Type) bool {
 		switch t2 := t2.(type) {
 		case *types.Struct:
 			// Two structs intersect only if they have the same number of fields,
-			// and their corresponding fields have the same name and their types can be the same.
+			// and their corresponding fields have the same name, same tag and their types can be the same.
 			// e.g. struct{A int} and struct{A T} can be the same if constraint of T is {int | other}.
 			if t1.NumFields() != t2.NumFields() {
 				return false
 			}
 			for i := range t1.NumFields() {
-				if t1.Field(i).Name() != t2.Field(i).Name() {
+				if t1.Field(i).Id() != t2.Field(i).Id() {
 					return false
 				}
 				if !matchType(t1.Field(i).Type(), t2.Field(i).Type()) {
+					return false
+				}
+				if t1.Tag(i) != t2.Tag(i) {
 					return false
 				}
 			}
@@ -155,7 +162,21 @@ func matchType(t1, t2 types.Type) bool {
 	case *types.Interface:
 		switch t2 := t2.(type) {
 		case *types.Interface:
-			return types.Identical(t1, t2)
+			// Note: Do not use types.Identical(t1, t2).
+			// Methods of interfaces may have generic params or results.
+			if t1.NumMethods() != t2.NumMethods() {
+				return false
+			}
+			methods2 := types.NewMethodSet(t2)
+			for i := range t1.NumMethods() {
+				mtd1 := t1.Method(i)
+				if mtd2 := methods2.Lookup(mtd1.Pkg(), mtd1.Name()); mtd2 == nil {
+					return false
+				} else if !matchSignature(mtd1.Signature(), mtd2.Obj().(*types.Func).Signature()) {
+					return false
+				}
+			}
+			return true
 		case *types.TypeParam:
 			// e.g. interface{A() int} and T can be the same if the constraint of T is interface{A() int; B()}.
 			return types.Satisfies(t1, t2.Underlying().(*types.Interface))
@@ -348,77 +369,69 @@ type Method struct {
 	F  *types.Func
 }
 
-// GroupMethod groups all the declared method in a package by the implementation of same interface method.
+func (mtd Method) String() string {
+	return fmt.Sprintf("%v: %v", mtd.ID.Name, mtd.F)
+}
+
+// GroupMethods groups all the declared method in a package by the implementation of same interface method.
 // The implMap[mtd] is a list of methods(include mtd itself) that implement the same interface method of mtd.
-func GroupMethod(defs map[*ast.Ident]types.Object) (implMap map[*types.Func][]Method) {
-	type group struct {
-		g  []Method // generic methods implements the same method
-		ng []Method // non-generic methods that implements the same method(with g if g is not empty).
+func GroupMethods(defs map[*ast.Ident]types.Object) (implMap map[*types.Func][]Method) {
+	var methods []Method
+	for id, def := range defs {
+		if f, ok := def.(*types.Func); ok {
+			if f.Signature().Recv() == nil {
+				continue // skip funcs
+			}
+			methods = append(methods, Method{id, f})
+		}
 	}
-	var groups []group
 
-	var iterateMethods = func(callback func(mtd Method)) {
-		for id, def := range defs {
-			if f, _ := def.(*types.Func); f != nil { // methods or funcs
-				recv := f.Signature().Recv()
-				if recv == nil {
-					continue // skip funcs
+	var groups []gg.Set[Method]
+
+	for i, mtd1 := range methods {
+		group := make(gg.Set[Method])
+		group.Add(mtd1)
+		for j, mtd2 := range methods {
+			if i == j {
+				continue
+			}
+			if implSameMethod(mtd1.F, mtd2.F) {
+				group.Add(mtd2)
+			}
+		}
+		groups = append(groups, group)
+	}
+
+	var merged = true
+	for merged {
+		merged = false
+	merge:
+		for i, group1 := range groups {
+			for mtd1 := range group1 {
+				for j, group2 := range groups {
+					if i == j {
+						continue
+					}
+					if group2.Contains(mtd1) {
+						// merge group2 to group1
+						for mtd := range group2 {
+							group1.Add(mtd)
+						}
+						// remove group2
+						groups = slices.Delete(groups, j, j+1)
+						merged = true
+						break merge
+					}
 				}
-				callback(Method{id, f})
 			}
 		}
 	}
-
-	// group generic methods
-	iterateMethods(func(mtd Method) {
-		// A method with generic receiver need not to have generic parameters.
-		// i.e func (T[Param]) f(int) {}
-		// This check may result some false-positive.
-		if mtd.F.Signature().RecvTypeParams() == nil &&
-			mtd.F.Signature().TypeParams() == nil { // not really necessary for now(go 1.24). A method can't have its own type params.
-			return // skip non-generic method
-		}
-		for i, group := range groups {
-			if slices.IndexFunc(group.g, func(e Method) bool {
-				return implSameMethod(e.F, mtd.F)
-			}) > -1 {
-				// found belonging group.
-				groups[i].g = append(group.g, Method{})
-				return
-			}
-		}
-		// start its own group
-		groups = append(groups, group{g: []Method{mtd}})
-	})
-
-	// add non-generic methods to the groups
-	iterateMethods(func(mtd Method) {
-		if mtd.F.Signature().RecvTypeParams() != nil ||
-			mtd.F.Signature().TypeParams() != nil { // not really necessary for now(go 1.24)
-			return // skip generic method
-		}
-		for i, group := range groups {
-			if slices.IndexFunc(group.g, func(e Method) bool { return implSameMethod(e.F, mtd.F) }) > -1 {
-				// found belonging group.
-				groups[i].ng = append(group.ng, mtd)
-				return
-			}
-			if len(group.g) == 0 && len(group.ng) > 0 && implSameMethod(group.ng[0].F, mtd.F) {
-				// found belonging group.
-				groups[i].ng = append(group.ng, mtd)
-				return
-			}
-		}
-		// start its own group
-		groups = append(groups, group{ng: []Method{mtd}})
-
-	})
 
 	implMap = make(map[*types.Func][]Method)
 	for _, group := range groups {
-		finalGroup := append(group.g, group.ng...)
-		for _, mtd := range finalGroup {
-			implMap[mtd.F] = finalGroup
+		methods := slices.Collect(maps.Keys(group))
+		for mtd := range group {
+			implMap[mtd.F] = methods
 		}
 	}
 	return implMap

@@ -110,3 +110,71 @@ func verify_I2_int() {
 type t18 int
 
 func (t18) f() {} // no param or result
+
+type t19 int
+
+func (t19) f(struct {
+	a int `tag`
+}) {
+}
+
+type t20 int
+
+func (t20) f(struct {
+	a int `tag`
+}) {
+}
+
+type t21 int
+
+func (t21) f(struct {
+	a int
+}) {
+}
+
+type t22[T any] int
+
+func (t22[T]) f(struct {
+	a T `tag`
+}) {
+}
+
+type t23[T any] int
+
+func (t23[T]) f(struct {
+	a T
+}) {
+}
+
+type iface19alias = interface {
+	f(struct {
+		a int `tag`
+	})
+}
+
+func verify_t19() {
+	var i iface19alias = t19(0)
+
+	i = t20(0)
+	//i = t21(0)
+	i = t22[int](0)
+	//i = t32[int](0)
+
+	_ = i
+}
+
+type t24 int
+
+func (t24) f2(interface{ f1() int }) {}
+
+type t25[T any] int
+
+func (t25[T]) f2(interface{ f1() T }) {}
+
+func verity_t24() {
+	var i interface {
+		f2(interface{ f1() int })
+	} = t24(0)
+	i = t25[int](0)
+	_ = i
+}

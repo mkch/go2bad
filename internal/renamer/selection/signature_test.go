@@ -36,30 +36,44 @@ func Test_implSameMethod(t *testing.T) {
 	f16 := lookupMethod(pkg, "t16", 0)
 	f17 := lookupMethod(pkg, "t17", 0)
 	f18 := lookupMethod(pkg, "t18", 0)
+	f19 := lookupMethod(pkg, "t19", 0)
+	f20 := lookupMethod(pkg, "t20", 0)
+	f21 := lookupMethod(pkg, "t21", 0)
+	f22 := lookupMethod(pkg, "t22", 0)
+	f23 := lookupMethod(pkg, "t23", 0)
+	f24 := lookupMethod(pkg, "t24", 0)
+	f25 := lookupMethod(pkg, "t25", 0)
 
 	assertImplSameMethod(t, f1, f2, true, "simple match")
 	assertImplSameMethod(t, f1, f3, false, "variadic vs non-variadic")
 	assertImplSameMethod(t, f3, f4, true, "variadic match")
-	assertImplSameMethod(t, f5, f6, false, "Defined types are unique")
-	assertImplSameMethod(t, f5, f7, false, "Defined types are unique")
-	assertImplSameMethod(t, f6, f7, true, "Alias match")
-	assertImplSameMethod(t, f5, f8, false, "Defined types are unique")
-	assertImplSameMethod(t, f6, f8, false, "Defined types are unique")
+	assertImplSameMethod(t, f5, f6, false, "defined types are unique")
+	assertImplSameMethod(t, f5, f7, false, "defined types are unique")
+	assertImplSameMethod(t, f6, f7, true, "alias match")
+	assertImplSameMethod(t, f5, f8, false, "defined types are unique")
+	assertImplSameMethod(t, f6, f8, false, "defined types are unique")
 	assertImplSameMethod(t, f1, f9, false, "not satisfies")
 	assertImplSameMethod(t, f10, f11, true, "Type terms intersect")
-	assertImplSameMethod(t, f10, f1, false, "Defined types are unique")
+	assertImplSameMethod(t, f10, f1, false, "defined types are unique")
 	assertImplSameMethod(t, f12, f1, false, "simple mismatch: argument")
 	assertImplSameMethod(t, f13, f1, false, "simple mismatch: return value")
 	assertImplSameMethod(t, f14, f9, false, "not satisfies")
-	assertImplSameMethod(t, f15, f16, false, "Defined types are unique")
+	assertImplSameMethod(t, f15, f16, false, "defined types are unique")
 	assertImplSameMethod(t, f1, f17, true, "satisfies")
 	assertImplSameMethod(t, f18, f18, true, "no param nor result")
+	assertImplSameMethod(t, f19, f20, true, "identical structs")
+	assertImplSameMethod(t, f19, f21, false, "tags diff")
+	assertImplSameMethod(t, f1, f21, false, "param diff")
+	assertImplSameMethod(t, f19, f22, true, "potentially identical structs")
+	assertImplSameMethod(t, f19, f23, false, "tags diff")
+	assertImplSameMethod(t, f21, f23, true, "potentially identical structs")
+	assertImplSameMethod(t, f24, f25, true, "potentially identical interfaces")
 
 }
 
-func Test_GroupMethod(t *testing.T) {
+func Test_GroupMethods(t *testing.T) {
 	pkg, info := loadPackage()
-	implMap := GroupMethod(info.Defs)
+	implMap := GroupMethods(info.Defs)
 
 	var equal = func(s1, s2 []*types.Func) bool {
 		s1 = slices.Clone(s1)
@@ -74,7 +88,14 @@ func Test_GroupMethod(t *testing.T) {
 
 	var stringify = func(s []*types.Func) string {
 		ss := slices.Collect(iter2.Map(slices.Values(s), func(f *types.Func) string {
-			return f.Signature().Recv().Type().(*types.Named).Obj().Name() + "." + f.Name()
+			var recvName string
+			switch recv := f.Signature().Recv().Type().(type) {
+			case *types.Named:
+				recvName = recv.Obj().Name()
+			default:
+				recvName = recv.String()
+			}
+			return recvName + "." + f.Name()
 		}))
 		return fmt.Sprintf("%s", ss)
 	}
@@ -106,12 +127,20 @@ func Test_GroupMethod(t *testing.T) {
 	f17 := lookupMethod(pkg, "t17", 0)
 	f18 := lookupMethod(pkg, "t18", 0)
 	fi := lookupType(pkg, "iface").(*types.Named).Underlying().(*types.Interface).ExplicitMethod(0)
+	f19 := lookupMethod(pkg, "t19", 0)
+	f20 := lookupMethod(pkg, "t20", 0)
+	f21 := lookupMethod(pkg, "t21", 0)
+	f22 := lookupMethod(pkg, "t22", 0)
+	f23 := lookupMethod(pkg, "t23", 0)
+	fi19 := lookupType(pkg, "iface19alias").(*types.Alias).Underlying().(*types.Interface).ExplicitMethod(0)
 
-	assertEqualGroup(t, implMap[f1], []*types.Func{f1, f2, f9, f17, fi})
-	assertEqualGroup(t, implMap[f2], []*types.Func{f1, f2, f9, f17, fi})
-	assertEqualGroup(t, implMap[f9], []*types.Func{f1, f2, f9, f17, fi})
-	assertEqualGroup(t, implMap[f17], []*types.Func{f1, f2, f9, f17, fi})
-	assertEqualGroup(t, implMap[fi], []*types.Func{f1, f2, f9, f17, fi})
+	assertEqualGroup(t, implMap[f1], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[f2], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[f9], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[f17], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[f21], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[f23], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
+	assertEqualGroup(t, implMap[fi], []*types.Func{f1, f2, f9, f17, f21, f23, fi})
 
 	assertEqualGroup(t, implMap[f3], []*types.Func{f3, f4})
 	assertEqualGroup(t, implMap[f4], []*types.Func{f3, f4})
@@ -136,6 +165,11 @@ func Test_GroupMethod(t *testing.T) {
 	assertEqualGroup(t, implMap[f16], []*types.Func{f16})
 
 	assertEqualGroup(t, implMap[f18], []*types.Func{f18})
+
+	assertEqualGroup(t, implMap[f19], []*types.Func{f19, f20, f22, fi19})
+	assertEqualGroup(t, implMap[f20], []*types.Func{f19, f20, f22, fi19})
+	assertEqualGroup(t, implMap[f22], []*types.Func{f19, f20, f22, fi19})
+
 }
 
 // assertImplSameMethod is a helper for testing MayImplSameMethod.

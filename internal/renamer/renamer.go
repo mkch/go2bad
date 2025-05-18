@@ -22,28 +22,43 @@ type defRenamer struct {
 	info        *scope.Info
 	sel         *selection.Selection
 	methodGroup map[token.Pos][]selection.Method
+	// The type of "*testing.T".
+	// Used to match the argument of a testing function.
+	// nil if "testing" package is not imported by this package.
+	asterisk_testing_dot_T types.Type
 }
 
 func newDefRenamer(pkg *packages.Package) *defRenamer {
 	renamer := &defRenamer{sel: selection.New(pkg)}
 	renamer.methodGroup = maps.Collect(iter2.Map2(
-		maps.All(selection.GroupMethod(pkg.TypesInfo.Defs)),
+		maps.All(selection.GroupMethods(pkg.TypesInfo.Defs)),
 		func(k *types.Func, v []selection.Method) (token.Pos, []selection.Method) {
 			pos := k.Pos()
 			return pos, v
 		}))
 	renamer.pkgScope, renamer.info = scope.PackageScope(pkg)
+
+	for _, imported := range pkg.Types.Imports() {
+		if imported.Path() == "testing" {
+			renamer.asterisk_testing_dot_T = types.NewPointer(imported.Scope().Lookup("T").Type())
+			break
+		}
+	}
 	return renamer
 }
 
-func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, keep func(pkg, name string) bool) func(id *ast.Ident, usePos token.Pos) {
+func RenameUsedExports(pkg *packages.Package, renamed map[token.Pos]string) {
+	for id, use := range pkg.TypesInfo.Uses {
+		if newName, ok := renamed[use.Pos()]; ok {
+			id.Name = newName
+		}
+	}
+}
+
+func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, renamedExports map[token.Pos]string, keep func(pkg, name string) bool) {
 	var renamer = newDefRenamer(pkg)
 
 	renamed := make(map[token.Pos]string)
-	var xRenamed map[token.Pos]string // exported IDs renamed
-	if renameExported {
-		xRenamed = make(map[token.Pos]string)
-	}
 
 	for id, def := range pkg.TypesInfo.Defs {
 		if _, alreadyRenamed := renamed[id.Pos()]; alreadyRenamed {
@@ -65,7 +80,9 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 			if isInitFunc(def) {
 				continue
 			} else if def.Parent() == nil { // methods and struct fields.
-				if field, _ := def.(*types.Var); field != nil && field.Embedded() {
+				if isTestFunc(pkg.Fset, renamer.asterisk_testing_dot_T, def) {
+					continue // Do not rename test function.
+				} else if field, _ := def.(*types.Var); field != nil && field.Embedded() {
 					continue // Do not rename embedded fields. They are renamed with their types.
 				}
 				rename = renamer.RenameFieldMethod
@@ -86,6 +103,13 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 		} else {
 			next = idGen.NewUnexported(nil)
 		}
+		if id.Name == "i" {
+			if _, ok := def.(*types.PkgName); ok {
+				fmt.Println("pkg", id)
+			} else if _, ok := def.(*types.Var); ok {
+				fmt.Println("var", id)
+			}
+		}
 		for {
 			newName := next()
 			if id.Name == newName {
@@ -94,9 +118,9 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 			if result := rename(id, newName); len(result) > 0 {
 				for _, r := range result {
 					renamed[r.Pos()] = newName
-				}
-				if exported {
-					xRenamed[id.Pos()] = newName
+					if exported {
+						renamedExports[r.Pos()] = newName
+					}
 				}
 				break
 			}
@@ -105,15 +129,6 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 
 	for id, use := range pkg.TypesInfo.Uses {
 		if newName, ok := renamed[use.Pos()]; ok {
-			id.Name = newName
-		}
-	}
-
-	if !renameExported {
-		return nil
-	}
-	return func(id *ast.Ident, usePos token.Pos) {
-		if newName, ok := xRenamed[usePos]; ok {
 			id.Name = newName
 		}
 	}
@@ -127,7 +142,7 @@ func (renamer *defRenamer) canRenameScoped(name string, defPos token.Pos, defPar
 		if use.Def != defPos {
 			continue
 		}
-		if !use.UseScope.CanUse(newName, defPos) {
+		if !use.UseScope.CanUse(newName, use.Use) {
 			return false
 		}
 	}
@@ -149,6 +164,7 @@ func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) (renamed 
 	if !renamer.sel.CanRenameEmbedded(id.Pos(), id.Name, newName) {
 		return
 	}
+	// TODO: Here
 	scope := renamer.info.DefScopes[id]
 	if !renamer.canRenameScoped(id.Name, id.Pos(), scope, newName) {
 		return
@@ -158,16 +174,13 @@ func (renamer *defRenamer) RenameScoped(id *ast.Ident, newName string) (renamed 
 	renamer.info.Uses.Rename(id.Name, id.Pos(), newName)
 	renamer.info.Defs.Rename(id.Name, id.Pos(), newName)
 	id.Name = newName
-	renamer.sel.RenameEmbedded(id.Pos(), newName)
+	renamer.sel.RenameEmbedded(id.Pos(), newName) // TODO: can move to above?
 	return []*ast.Ident{id}
 }
 
 func (renamer *defRenamer) RenameFieldMethod(id *ast.Ident, newName string) (renamed []*ast.Ident) {
-	if id.Name == "abcdef" {
-		fmt.Println(id)
-	}
-	methodsImplSame := renamer.methodGroup[id.Pos()]
-	if len(methodsImplSame) > 0 { // method
+	// method
+	if methodsImplSame := renamer.methodGroup[id.Pos()]; len(methodsImplSame) > 0 {
 		for _, mtd := range methodsImplSame {
 			if !renamer.sel.CanRenameFieldMethod(id.Name, mtd.ID.Pos(), newName) {
 				return
@@ -196,7 +209,7 @@ func (renamer *defRenamer) RenameFieldMethod(id *ast.Ident, newName string) (ren
 var reTestFuncName = regexp.MustCompile(`^Test[^\p{Ll}]`)
 
 // isTestFunc returns true if obj is a test function.
-func isTestFunc(fset *token.FileSet, obj types.Object) bool {
+func isTestFunc(fset *token.FileSet, asterisk_testing_dot_T types.Type, obj types.Object) bool {
 	if !strings.HasSuffix(fset.PositionFor(obj.Pos(), true).Filename, "_test.go") {
 		return false
 	}
@@ -215,8 +228,12 @@ func isTestFunc(fset *token.FileSet, obj types.Object) bool {
 	if params == nil || signature.TypeParams() != nil || signature.Variadic() {
 		return false
 	}
+	result := signature.Results()
+	if result.Len() != 0 {
+		return false
+	}
 	argumentType := types.Unalias(params.At(0).Type())
-	return argumentType.String() == "*testing.T"
+	return types.Identical(argumentType, asterisk_testing_dot_T)
 
 }
 
