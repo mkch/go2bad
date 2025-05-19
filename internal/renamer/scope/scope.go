@@ -5,11 +5,12 @@ import (
 	"go/token"
 	"go/types"
 	"maps"
+	"math"
 	"slices"
 
+	"github.com/mkch/gg"
 	"github.com/mkch/gg/slices2"
 	"github.com/mkch/iter2"
-	"golang.org/x/tools/go/packages"
 )
 
 // Scope is a lexical scope of go source code.
@@ -33,12 +34,6 @@ type Scope interface {
 	CanUse(name string, pos token.Pos) bool
 	// contains returns whether pos is in this scope.
 	contains(pos token.Pos) bool
-}
-
-// Local is a scope other than the scope of universe, package or file.
-type Local interface {
-	Scope
-	LookupUseChildren(name string, pos token.Pos) (Scope, token.Pos)
 }
 
 // DeleteFunc removes elements from the slice associated with the given name
@@ -243,9 +238,15 @@ func (s *local) lookupDefParent(name string, pos token.Pos) Scope {
 		return s
 	}
 	for s := s.Parent(); s != nil; s = s.Parent() {
-		if found := s.LookupDef(name); found.IsValid() && found < pos {
-			return s
+		found := s.LookupDef(name)
+		if !found.IsValid() {
+			continue
 		}
+		if _, isLocal := s.(*local); isLocal {
+			// do not consider pos if s is *file, *pkg or *universe
+			return gg.If(found < pos, s, nil)
+		}
+		return s
 	}
 	return nil
 }
@@ -350,12 +351,14 @@ func (s *pkg) contains(pos token.Pos) bool {
 	return false
 }
 
+const universePos = token.Pos(math.MaxInt)
+
 // universeDefs is the definitions in types.Universe.
 var universeDefs = make(map[string]token.Pos)
 
 func init() {
 	for _, name := range types.Universe.Names() {
-		universeDefs[name] = token.NoPos
+		universeDefs[name] = universePos
 	}
 }
 
@@ -374,10 +377,7 @@ func (s *universe) Parent() Scope {
 }
 
 func (s *universe) LookupDef(name string) token.Pos {
-	if pos := universeDefs[name]; pos.IsValid() {
-		return pos
-	}
-	return s.pkg.LookupDef(name)
+	return universeDefs[name]
 }
 
 func (s *universe) LookupUse(name string) []defUsePos {
@@ -397,7 +397,7 @@ func (s *universe) CanUse(name string, pos token.Pos) bool {
 }
 
 func (s *universe) contains(pos token.Pos) bool {
-	return s.pkg.contains(pos)
+	return s.pkg.contains(pos) || pos == universePos
 }
 
 type idObject struct {
@@ -467,29 +467,29 @@ type Info struct {
 }
 
 // PackageScope creates the package scope of pkg.
-func PackageScope(p *packages.Package) (Scope, *Info) {
+func PackageScope(p *types.Package, typesInfo *types.Info) (Scope, *Info) {
 	var info = Info{Defs: make(DefMap),
 		Uses:      make(UseMap),
 		DefScopes: make(map[*ast.Ident]Scope),
 	}
-	var pkg = pkg{}
-	universe := universe{&pkg}
-	pkg.parent = &universe
+	var pkgScope = pkg{}
+	universe := universe{&pkgScope}
+	pkgScope.parent = &universe
 
 	uses := slices.Collect(iter2.Map2To1(
-		maps.All(p.TypesInfo.Uses),
+		maps.All(typesInfo.Uses),
 		func(id *ast.Ident, obj types.Object) idObject {
 			return idObject{id, obj}
 		}))
 	defs := slices.Collect(iter2.Map2To1(
-		maps.All(p.TypesInfo.Defs),
+		maps.All(typesInfo.Defs),
 		func(id *ast.Ident, obj types.Object) idObject {
 			return idObject{id, obj}
 		}))
 	info.DefNonObjects = filterDefs(&defs, uses)
-	src := p.Types.Scope()
-	m := map[*types.Scope]Scope{src: &pkg}
-	pkg.defs, pkg.uses = scopeDefUses(src, &pkg, &defs, &uses, &info)
+	src := p.Scope()
+	m := map[*types.Scope]Scope{src: &pkgScope}
+	pkgScope.defs, pkgScope.uses = scopeDefUses(src, &pkgScope, &defs, &uses, &info)
 	for fileScope := range src.Children() {
 		var file file
 		var imports = make(map[string]token.Pos)
@@ -502,16 +502,16 @@ func PackageScope(p *packages.Package) (Scope, *Info) {
 				imports[use.id.Name] = use.object.Pos()
 			}
 		}
-		newScope(&file, (*scope)(&file), &pkg, fileScope, &defs, &uses, m, &info)
+		newScope(&file, (*scope)(&file), &pkgScope, fileScope, &defs, &uses, m, &info)
 		// Imported packages with explicit names are also added to file.defs by
 		// scopeDefUses(called in newScope). But it' OK because file.defs is a map.
 		maps.Insert(file.defs, maps.All(imports))
 		m[fileScope] = &file
-		pkg.files = append(pkg.files, &file)
+		pkgScope.files = append(pkgScope.files, &file)
 	}
 	m[types.Universe] = &universe
-	m[src] = &pkg
-	return &pkg, &info
+	m[src] = &pkgScope
+	return &pkgScope, &info
 }
 
 func newScope(target Scope, concreteTarget *scope, parent Scope, src *types.Scope, defs *[]idObject, uses *[]idObject, m map[*types.Scope]Scope, info *Info) {

@@ -36,7 +36,7 @@ func newDefRenamer(pkg *packages.Package) *defRenamer {
 			pos := k.Pos()
 			return pos, v
 		}))
-	renamer.pkgScope, renamer.info = scope.PackageScope(pkg)
+	renamer.pkgScope, renamer.info = scope.PackageScope(pkg.Types, pkg.TypesInfo)
 
 	for _, imported := range pkg.Types.Imports() {
 		if imported.Path() == "testing" {
