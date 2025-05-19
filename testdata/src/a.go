@@ -2,7 +2,7 @@
 package a
 
 import (
-	"iter"
+	. "iter"
 	"slices"
 
 	it2 "github.com/mkch/iter2"
@@ -12,6 +12,36 @@ import (
 
 // t1 is int
 type t1 int
+
+func (v t1) value() int {
+	return int(v)
+}
+
+func (v t1) a() int {
+	return int(v)
+}
+
+type t2 struct {
+	t1
+}
+
+func (v t2) value2() int {
+	return 0
+}
+
+type I1 interface {
+	a() int
+}
+
+type intValuer interface {
+	I1
+	value() int
+}
+
+type iface1 interface {
+	value() byte
+	f(a int)
+}
 
 var v1 t1 = 0
 
@@ -26,8 +56,9 @@ func return1() int {
 
 
 	 */
-	var v1 byte = byte(v1)   // v1 shadows v1
-	return int(v1 + byte(x)) // ret
+	var v1valuer intValuer = v1
+	var v1 byte = byte(v1valuer.value()) // v1 shadows v1
+	return int(v1 + byte(x))             // ret
 }
 
 func Return2() (n int) {
@@ -39,14 +70,36 @@ func Return2() (n int) {
 	return
 }
 
+type Int = int
+
 type a[T any] struct{ a T }
 
-func concat(seqs ...iter.Seq[int]) iter.Seq[int] {
+func (a[T]) abcdef() Int {
+	return 0
+}
+
+func (a[T]) f(b T) {
+
+}
+
+func concat(seqs ...Seq[int]) Seq[int] {
 	var unused a[string]
 	unused.a = ""
 	_ = unused
-	var args []iter.Seq[int] = seqs
+	var args []Seq[int] = seqs
 	return it2.Concat(args...)
+}
+
+func ta() {
+	var any1 any
+	switch t1 := any1.(type) {
+	case int:
+		t1 = 1
+	case string:
+		t1 = "1"
+	default:
+		_ = t1
+	}
 }
 
 var (

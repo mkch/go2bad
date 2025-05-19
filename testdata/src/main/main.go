@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
-	b "path/to/demo"
+	d "path/to/demo"
 )
 
 func main() {
-	fmt.Println(b.Return2())
+	var a x = 1
+	fmt.Println(d.Return2() + a)
 }
+
+type x = int

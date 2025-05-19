@@ -74,6 +74,9 @@ var reserved = []string{
 	"chan", "else", "goto", "package", "switch",
 	"const", "fallthrough", "if", "range", "type",
 	"continue", "for", "import", "return", "var",
+
+	// special cases
+	"init", // init can't be a regular function name
 }
 
 func forbiddenUnexported(userDefined gg.Set[string]) gg.Set[string] {
