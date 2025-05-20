@@ -2,7 +2,6 @@
 package renamer
 
 import (
-	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -10,9 +9,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mkch/go2bad/internal/idgen"
-	"github.com/mkch/go2bad/internal/renamer/scope"
-	"github.com/mkch/go2bad/internal/renamer/selection"
+	"github.com/mkch/goingbad/internal/idgen"
+	"github.com/mkch/goingbad/internal/renamer/scope"
+	"github.com/mkch/goingbad/internal/renamer/selection"
 	"github.com/mkch/iter2"
 	"golang.org/x/tools/go/packages"
 )
@@ -102,13 +101,6 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 			next = idGen.NewExported(nil)
 		} else {
 			next = idGen.NewUnexported(nil)
-		}
-		if id.Name == "i" {
-			if _, ok := def.(*types.PkgName); ok {
-				fmt.Println("pkg", id)
-			} else if _, ok := def.(*types.Var); ok {
-				fmt.Println("var", id)
-			}
 		}
 		for {
 			newName := next()

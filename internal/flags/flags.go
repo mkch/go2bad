@@ -144,7 +144,7 @@ func Init() *Flags {
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
-		fmt.Fprintln(flag.CommandLine.Output(), "\nCode repository: https://github.com/mkch/go2bad")
+		fmt.Fprintln(flag.CommandLine.Output(), "\nCode repository: https://github.com/mkch/goingbad")
 	}
 	flag.BoolVar(&flags.IncludeTests, "include-test", false, "Include tests code.")
 	flag.BoolVar(&flags.IncludeTests, "t", false, "Alias for -include-test.")

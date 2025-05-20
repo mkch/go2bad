@@ -1,4 +1,4 @@
-module github.com/mkch/go2bad
+module github.com/mkch/goingbad
 
 go 1.24.0
 

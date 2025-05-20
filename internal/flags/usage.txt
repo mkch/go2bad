@@ -1,8 +1,8 @@
-go2bad is a Go source code obfuscator.
+goingbad is a Go source code obfuscator.
 
 Usage:
 
-    go2bad [-O output_dir] [flags] packages
+    goingbad [-O output_dir] [flags] packages
 
 Source packages are specified the same way as in the `go build` command. 
 For example, . specifies the package in the current directory, 
