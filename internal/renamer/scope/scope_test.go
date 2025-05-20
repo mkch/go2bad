@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func Test_Scope_CanUse(t *testing.T) {
+func Test_Scope_CanDef(t *testing.T) {
 	pkg, typesInfo := loadPackage()
 	pkgScope, _ := PackageScope(pkg, typesInfo)
 
@@ -27,8 +27,21 @@ func Test_Scope_CanUse(t *testing.T) {
 	assertCanDef(t, pkg, pkgScope, "", "tag", "fmt", false, "already defined in file")
 	assertCanDef(t, pkg, pkgScope, "", "tag", "pkgVar2", false, "already defined in another file")
 
-	assertCanDef(t, pkg, pkgScope, "", "pkgVar1", "b", false, "shadowed by parameter")
+	assertCanDef(t, pkg, pkgScope, "", "pkgVar1", "b", true, "unique in scope")
+}
 
+func Test_Scope_CanUse(t *testing.T) {
+	pkg, typesInfo := loadPackage()
+	pkgScope, _ := PackageScope(pkg, typesInfo)
+
+	assertCanUse(t, pkg, pkgScope, "", "tag", "pkgVar2", nil, true, "OK")
+	assertCanUse(t, pkg, pkgScope, "", "tag", "pkgVar1", nil, false, "already in use")
+
+	assertCanUse(t, pkg, pkgScope, "f1", "tag", "a", nil, true, "OK")
+	assertCanUse(t, pkg, pkgScope, "f1", "tag", "b", nil, false, "already used as parameter")
+
+	assertCanUse(t, pkg, pkgScope, "f2", "tag", "a", nil, true, "OK")
+	assertCanUse(t, pkg, pkgScope, "f2", "tag", "b", nil, false, "already used")
 }
 func assertCanDef(t *testing.T, pkg *types.Package, pkgScope Scope, funcName, tagName, name string, want bool, msg string) {
 	t.Helper()
@@ -38,10 +51,10 @@ func assertCanDef(t *testing.T, pkg *types.Package, pkgScope Scope, funcName, ta
 	}
 }
 
-func assertCanUse(t *testing.T, pkg *types.Package, pkgScope Scope, funcName, tagName, name string, want bool, msg string) {
+func assertCanUse(t *testing.T, pkg *types.Package, pkgScope Scope, funcName, tagName, name string, defScope Scope, want bool, msg string) {
 	t.Helper()
 	scope, tag := lookupID(pkg, pkgScope, funcName, tagName)
-	if got := scope.CanUse(name, tag); got != want {
+	if got := scope.CanUse(name, tag, defScope); got != want {
 		t.Errorf("scope.CanUse(%q) want %v got %v, %v", name, want, got, msg)
 	}
 }

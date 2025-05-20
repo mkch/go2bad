@@ -134,15 +134,15 @@ func Rename(pkg *packages.Package, idGen *idgen.Generator, renameExported bool, 
 	}
 }
 
-func (renamer *defRenamer) canRenameScoped(name string, defPos token.Pos, defParent scope.Scope, newName string) bool {
-	if !defParent.CanDef(newName, defPos) {
+func (renamer *defRenamer) canRenameScoped(name string, defPos token.Pos, defScope scope.Scope, newName string) bool {
+	if !defScope.CanDef(newName, defPos) {
 		return false
 	}
 	for _, use := range renamer.info.Uses.Lookup(name) {
 		if use.Def != defPos {
 			continue
 		}
-		if !use.UseScope.CanUse(newName, use.Use) {
+		if !use.UseScope.CanUse(newName, use.Use, defScope) {
 			return false
 		}
 	}

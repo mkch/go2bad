@@ -24,4 +24,6 @@ func f2() {
 	}
 }
 
+var _ = pkgVar1
+
 var tag int

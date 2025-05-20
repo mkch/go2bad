@@ -8,7 +8,6 @@ import (
 	"math"
 	"slices"
 
-	"github.com/mkch/gg"
 	"github.com/mkch/gg/slices2"
 	"github.com/mkch/iter2"
 )
@@ -31,7 +30,8 @@ type Scope interface {
 	// CanDef returns whether a new name can be defined at pos in this scope.
 	CanDef(name string, pos token.Pos) bool
 	// CanUse returns whether a new name can be used at pos in this scope.
-	CanUse(name string, pos token.Pos) bool
+	// Parameter defScope is the scope where the name would be defined.
+	CanUse(name string, pos token.Pos, defScope Scope) bool
 	// contains returns whether pos is in this scope.
 	contains(pos token.Pos) bool
 }
@@ -161,7 +161,7 @@ func (s *file) CanDef(name string, pos token.Pos) bool {
 	return true
 }
 
-func (s *file) CanUse(name string, pos token.Pos) bool {
+func (s *file) CanUse(name string, pos token.Pos, defScope Scope) bool {
 	// name is already used in this file, if add a use of name it will
 	// not reference the right target.
 	if s.LookupUse(name) != nil {
@@ -230,35 +230,35 @@ func (s *local) CanDef(name string, pos token.Pos) bool {
 	return true
 }
 
-// lookupDefParent looks for a name in recursive parents of s(including s itself).
+// lookupDefParent looks for a name in recursive parents of s(including s itself) until defScope.
 // If a name is found and the found position is less than pos, the scope contains that
 // name is returned.
-func (s *local) lookupDefParent(name string, pos token.Pos) Scope {
+func (s *local) lookupDefParent(name string, pos token.Pos, defScope Scope) Scope {
 	if found := s.LookupDef(name); found.IsValid() && found < pos {
 		return s
 	}
 	for s := s.Parent(); s != nil; s = s.Parent() {
 		found := s.LookupDef(name)
-		if !found.IsValid() {
-			continue
+		if found.IsValid() {
+			if _, isLocal := s.(*local); !isLocal || found < pos {
+				return s
+			}
 		}
-		if _, isLocal := s.(*local); isLocal {
-			// do not consider pos if s is *file, *pkg or *universe
-			return gg.If(found < pos, s, nil)
+		if s == defScope {
+			break
 		}
-		return s
 	}
 	return nil
 }
 
-func (s *local) CanUse(name string, pos token.Pos) bool {
+func (s *local) CanUse(name string, pos token.Pos, defScope Scope) bool {
 	// name is already in use, the newly added will be shadowed.
 	if s.LookupUse(name) != nil {
 		return false
 	}
 	// there is already an definition of name before pos,
 	// the newly added will be shadowed.
-	if s.lookupDefParent(name, pos) != nil {
+	if s.lookupDefParent(name, pos, defScope) != nil {
 		return false
 	}
 	return true
@@ -324,7 +324,7 @@ func (s *pkg) CanDef(name string, pos token.Pos) bool {
 	return true
 }
 
-func (s *pkg) CanUse(name string, pos token.Pos) bool {
+func (s *pkg) CanUse(name string, pos token.Pos, _ Scope) bool {
 	// name is already used in this package, if add a use of name it will
 	// not reference the right target.
 	if s.LookupUse(name) != nil {
@@ -335,7 +335,7 @@ func (s *pkg) CanUse(name string, pos token.Pos) bool {
 			continue
 		}
 		// name is already used in current file ...
-		if file.Parent().LookupUse(name) != nil {
+		if file.LookupUse(name) != nil {
 			return false
 		}
 	}
@@ -392,7 +392,7 @@ func (s *universe) CanDef(name string, pos token.Pos) bool {
 	return false
 }
 
-func (s *universe) CanUse(name string, pos token.Pos) bool {
+func (s *universe) CanUse(string, token.Pos, Scope) bool {
 	return false
 }
 
